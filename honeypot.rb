@@ -226,8 +226,10 @@ class Honeypot
     # Track unbound ports
     @currently_unbound = Set.new(@available_ports - @currently_bound.to_a)
 
+    rotatable_count = bound_count - well_known_in_range.size
     @logger.info "Initially bound #{bound_count}/#{@available_ports.size} ports (#{(@open_chance)}% target)"
-    @logger.info "Well-known ports: #{well_known_in_range.size}, Other ports: #{bound_count - well_known_in_range.size}"
+    @logger.info "Well-known ports (always bound): #{well_known_in_range.size}, Rotatable ports: #{rotatable_count}"
+    @logger.info "Expected rotation: ~30-50 ports every #{@rotation_interval}s (30-50% of rotatable ports, min 30)"
   end
 
   def bind_port(port)
@@ -305,16 +307,23 @@ class Honeypot
     rotatable_bound = @currently_bound.to_a - @well_known_ports.to_a
     rotatable_unbound = @currently_unbound.to_a - @well_known_ports.to_a
 
-    # Rotate 20-30% of rotatable ports each cycle
-    rotation_percentage = rand(20..30)
-    num_to_rotate = (rotatable_bound.size * rotation_percentage / 100.0).round
-    num_to_rotate = [num_to_rotate, 1].max  # Rotate at least 1 if possible
-
     return if rotatable_bound.empty? || rotatable_unbound.empty?
 
+    # Rotate 30-50% of rotatable ports each cycle (more aggressive for better ephemeral behavior)
+    rotation_percentage = rand(30..50)
+    num_to_rotate = (rotatable_bound.size * rotation_percentage / 100.0).round
+
+    # Ensure we rotate at least 30 ports (or all available if less)
+    # This guarantees substantial port changes for Nmap top 200
+    minimum_rotation = 30
+    num_to_rotate = [num_to_rotate, minimum_rotation].max
+
+    # Don't try to rotate more than available
+    num_to_rotate = [num_to_rotate, rotatable_bound.size, rotatable_unbound.size].min
+
     # Select random ports to unbind and bind
-    ports_to_unbind = rotatable_bound.sample([num_to_rotate, rotatable_bound.size].min)
-    ports_to_bind = rotatable_unbound.sample([num_to_rotate, rotatable_unbound.size].min)
+    ports_to_unbind = rotatable_bound.sample(num_to_rotate)
+    ports_to_bind = rotatable_unbound.sample(num_to_rotate)
 
     unbind_count = 0
     bind_count = 0
@@ -337,7 +346,13 @@ class Honeypot
       end
     end
 
-    @logger.info "[ROTATION] Cycled #{unbind_count} ports closed, #{bind_count} opened. Total: #{@currently_bound.size} bound, #{@currently_unbound.size} unbound"
+    # Calculate what percentage of non-well-known ports changed
+    if rotatable_bound.size > 0
+      rotation_percent = (unbind_count.to_f / rotatable_bound.size * 100).round
+      @logger.info "[ROTATION] Cycled #{unbind_count} closed, #{bind_count} opened (#{rotation_percent}% of rotatable). Total: #{@currently_bound.size} bound, #{@currently_unbound.size} unbound"
+    else
+      @logger.info "[ROTATION] Cycled #{unbind_count} closed, #{bind_count} opened. Total: #{@currently_bound.size} bound, #{@currently_unbound.size} unbound"
+    end
   end
 
   def handle_port(port, server, type)
