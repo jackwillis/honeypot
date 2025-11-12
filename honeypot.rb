@@ -156,83 +156,116 @@ class Honeypot
 
         client = server.accept_nonblock
         peer = client.peeraddr
+        peer_ip = peer[3]
+        peer_port = peer[1]
+
+        @logger.info "[ACCEPT] Connection from #{peer_ip}:#{peer_port} to port #{port}"
 
         # Determine behavior at runtime (truly ephemeral)
         behavior = determine_runtime_behavior(port)
+        @logger.info "[STATE] Port #{port} decided: #{behavior.to_s.upcase}"
 
         case behavior
         when :open
-          @logger.info "#{peer[3]}:#{peer[1]} -> #{port} (OPEN)"
-          handle_open_connection(client, port)
+          @logger.info "[OPEN] #{peer_ip}:#{peer_port} -> #{port} - Handling as OPEN"
+          handle_open_connection(client, port, peer_ip, peer_port)
         when :filtered
-          @logger.info "#{peer[3]}:#{peer[1]} -> #{port} (FILTERED)"
-          handle_filtered_connection(client, port)
+          @logger.info "[FILTERED] #{peer_ip}:#{peer_port} -> #{port} - Simulating filtered port"
+          handle_filtered_connection(client, port, peer_ip, peer_port)
         when :closed
-          @logger.info "#{peer[3]}:#{peer[1]} -> #{port} (CLOSED)"
-          handle_closed_connection(client, port)
+          @logger.info "[CLOSED] #{peer_ip}:#{peer_port} -> #{port} - Closing immediately"
+          handle_closed_connection(client, port, peer_ip, peer_port)
         end
 
       rescue IO::WaitReadable
         next
       rescue => e
-        @logger.debug "Port #{port} error: #{e.message}"
+        @logger.error "[ERROR] Port #{port} error: #{e.message}"
+        @logger.debug e.backtrace.join("\n")
         break
       end
     end
   end
 
-  def handle_open_connection(client, port)
+  def handle_open_connection(client, port, peer_ip, peer_port)
     Thread.new do
+      start_time = Time.now
       begin
+        @logger.info "[OPEN] #{peer_ip}:#{peer_port} -> #{port} - Connection established"
+
         # Set socket options for more realistic behavior
         client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+        @logger.debug "[OPEN] #{peer_ip}:#{peer_port} -> #{port} - Socket options configured"
 
         # Send banner immediately for services that do so
         if should_send_banner_immediately?(port)
           banner = generate_banner(port)
           if banner
+            @logger.info "[SEND] #{peer_ip}:#{peer_port} -> #{port} - Sending banner (#{banner.bytesize} bytes)"
+            @logger.debug "[BANNER] #{banner.inspect}"
             client.write(banner)
             client.flush
           end
         end
 
         # Handle interactive protocols
+        @logger.info "[PROTOCOL] #{peer_ip}:#{peer_port} -> #{port} - Starting protocol interaction"
         handle_protocol_interaction(client, port)
 
       rescue Errno::ECONNRESET, Errno::EPIPE => e
-        @logger.debug "Connection reset by peer on port #{port}"
+        @logger.info "[RESET] #{peer_ip}:#{peer_port} -> #{port} - Connection reset by peer"
       rescue => e
-        @logger.debug "Connection error on port #{port}: #{e.message}"
+        @logger.error "[ERROR] #{peer_ip}:#{peer_port} -> #{port} - #{e.message}"
+        @logger.debug e.backtrace.join("\n")
       ensure
+        duration = Time.now - start_time
+        @logger.info "[CLOSE] #{peer_ip}:#{peer_port} -> #{port} - Connection closed (duration: #{duration.round(2)}s)"
         client.close rescue nil
       end
     end
   end
 
-  def handle_filtered_connection(client, port)
+  def handle_filtered_connection(client, port, peer_ip, peer_port)
     Thread.new do
+      start_time = Time.now
       begin
+        @logger.info "[FILTERED] #{peer_ip}:#{peer_port} -> #{port} - Connection established"
+
         # Filtered ports accept the connection but don't respond
         # This simulates a firewall dropping packets or a timeout
         # Sleep briefly to simulate network delay/timeout
-        sleep(rand(2..5))
+        timeout = rand(2..5)
+        @logger.info "[FILTERED] #{peer_ip}:#{peer_port} -> #{port} - Holding connection for #{timeout}s (no response)"
+        sleep(timeout)
+
+        @logger.info "[FILTERED] #{peer_ip}:#{peer_port} -> #{port} - Timeout complete, dropping connection"
       rescue => e
-        @logger.debug "Filtered connection error on port #{port}: #{e.message}"
+        @logger.error "[ERROR] #{peer_ip}:#{peer_port} -> #{port} - Filtered connection error: #{e.message}"
+        @logger.debug e.backtrace.join("\n")
       ensure
+        duration = Time.now - start_time
+        @logger.info "[CLOSE] #{peer_ip}:#{peer_port} -> #{port} - Filtered connection closed (duration: #{duration.round(2)}s)"
         client.close rescue nil
       end
     end
   end
 
-  def handle_closed_connection(client, port)
+  def handle_closed_connection(client, port, peer_ip, peer_port)
     Thread.new do
+      start_time = Time.now
       begin
+        @logger.info "[CLOSED] #{peer_ip}:#{peer_port} -> #{port} - Connection accepted, closing immediately"
+
         # Closed ports immediately disconnect
         # The TCP stack will send RST packet
         # Just close immediately without any response
+        @logger.info "[CLOSED] #{peer_ip}:#{peer_port} -> #{port} - Sending connection termination"
       rescue => e
-        @logger.debug "Closed connection error on port #{port}: #{e.message}"
+        @logger.error "[ERROR] #{peer_ip}:#{peer_port} -> #{port} - Closed connection error: #{e.message}"
+        @logger.debug e.backtrace.join("\n")
       ensure
+        duration = Time.now - start_time
+        @logger.info "[CLOSE] #{peer_ip}:#{peer_port} -> #{port} - Closed connection terminated (duration: #{duration.round(3)}s)"
         client.close rescue nil
       end
     end
@@ -285,12 +318,18 @@ class Honeypot
 
   def handle_http(client, port)
     begin
+      peer = client.peeraddr
+      peer_id = "#{peer[3]}:#{peer[1]}"
+
+      @logger.info "[HTTP] #{peer_id} -> #{port} - Waiting for HTTP request"
+
       # Wait for HTTP request
       request = client.gets
       return unless request
-      
-      @logger.debug "HTTP request on port #{port}: #{request.strip}"
-      
+
+      @logger.info "[RECV] #{peer_id} -> #{port} - Received HTTP request (#{request.bytesize} bytes)"
+      @logger.info "[HTTP] #{peer_id} -> #{port} - #{request.strip}"
+
       # Send proper HTTP response
       response = "HTTP/1.1 200 OK\r\n"
       response << "Server: nginx/1.18.0\r\n"
@@ -300,24 +339,41 @@ class Honeypot
       response << "Connection: close\r\n"
       response << "\r\n"
       response << "<html><head><title>Welcome</title></head><body><h1>It works!</h1></body></html>\r\n"
-      
+
+      @logger.info "[SEND] #{peer_id} -> #{port} - Sending HTTP 200 OK response (#{response.bytesize} bytes)"
       client.write(response)
       client.flush
+      @logger.info "[HTTP] #{peer_id} -> #{port} - Response sent successfully"
     rescue => e
-      @logger.debug "HTTP error: #{e.message}"
+      @logger.error "[HTTP] Port #{port} error: #{e.message}"
+      @logger.debug e.backtrace.join("\n")
     end
   end
 
   def handle_ssh(client, port)
     # SSH banner already sent, wait for client response
     begin
-      client.read_nonblock(255)
+      peer = client.peeraddr
+      peer_id = "#{peer[3]}:#{peer[1]}"
+
+      @logger.info "[SSH] #{peer_id} -> #{port} - Waiting for SSH client negotiation"
+      data = client.read_nonblock(255)
+      @logger.info "[RECV] #{peer_id} -> #{port} - Received SSH data (#{data.bytesize} bytes)"
+      @logger.debug "[SSH] #{peer_id} -> #{port} - Data: #{data.inspect}"
+
       # Send SSH protocol negotiation failure
-      client.write("\x00\x00\x00\x0c\x0a\x0e")
+      response = "\x00\x00\x00\x0c\x0a\x0e"
+      @logger.info "[SEND] #{peer_id} -> #{port} - Sending SSH negotiation failure (#{response.bytesize} bytes)"
+      client.write(response)
     rescue IO::WaitReadable
       # Client didn't send anything
+      peer = client.peeraddr rescue nil
+      if peer
+        @logger.info "[SSH] #{peer[3]}:#{peer[1]} -> #{port} - Client sent no data"
+      end
     rescue => e
-      @logger.debug "SSH error: #{e.message}"
+      @logger.error "[SSH] Port #{port} error: #{e.message}"
+      @logger.debug e.backtrace.join("\n")
     end
   end
 
