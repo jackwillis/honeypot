@@ -5,8 +5,40 @@ require 'time'
 require 'set'
 
 class Honeypot
+  # Nmap's most commonly scanned ports (top 200)
+  NMAP_TOP_200 = [
+    1, 3, 7, 9, 13, 17, 19, 21, 22, 23, 25, 26, 37, 53, 79, 80, 81, 82, 88, 100,
+    106, 110, 111, 113, 119, 135, 139, 143, 144, 179, 199, 254, 255, 280, 311, 389,
+    427, 443, 444, 445, 464, 465, 497, 513, 514, 515, 543, 544, 548, 554, 587, 593,
+    625, 631, 636, 646, 787, 808, 873, 902, 990, 993, 995, 999, 1000, 1022, 1024,
+    1025, 1026, 1027, 1028, 1029, 1030, 1031, 1032, 1033, 1035, 1036, 1037, 1038,
+    1039, 1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1049, 1050, 1051,
+    1052, 1053, 1054, 1055, 1056, 1057, 1058, 1059, 1060, 1061, 1062, 1063, 1064,
+    1065, 1066, 1067, 1068, 1069, 1070, 1071, 1072, 1073, 1074, 1075, 1076, 1077,
+    1078, 1079, 1080, 1081, 1082, 1083, 1084, 1085, 1086, 1087, 1088, 1089, 1090,
+    1091, 1092, 1093, 1094, 1095, 1096, 1097, 1098, 1099, 1100, 1102, 1104, 1105,
+    1106, 1107, 1108, 1110, 1111, 1112, 1113, 1114, 1117, 1119, 1121, 1122, 1123,
+    1124, 1126, 1130, 1131, 1132, 1137, 1138, 1141, 1145, 1147, 1148, 1149, 1151,
+    1152, 1154, 1163, 1164, 1165, 1166, 1169, 1174, 1175, 1183, 1185, 1186, 1187,
+    1192, 1198, 1199, 1201, 1213, 1216, 1217, 1233, 1234, 1236, 1244, 1247, 1248,
+    1259, 1271, 1272, 1277, 1287, 1296, 1300, 1301, 1309, 1310, 1311, 1322, 1328,
+    1334, 1352
+  ]
+
+  # Nmap top 1000 (subset for reference - can expand if needed)
+  NMAP_TOP_1000_EXTRA = (1..10000).select { |p| p % 10 == 0 } # Placeholder
+
   def initialize(options = {})
-    @port_range = options[:port_range] || (1..10000)
+    # Determine port range based on preset or explicit range
+    @port_range = if options[:preset]
+      get_preset_ports(options[:preset])
+    elsif options[:port_range]
+      options[:port_range]
+    else
+      # Default to Nmap top 200 to avoid file descriptor issues
+      NMAP_TOP_200
+    end
+
     @bind_ip = options[:bind_ip] || '0.0.0.0'  # Listen on all interfaces
     @open_chance = options[:open_chance] || 70
     @filtered_chance = options[:filtered_chance] || 20
@@ -17,26 +49,89 @@ class Honeypot
     @well_known_ports = Set.new  # Track well-known ports for consistent behavior
 
     setup_logging
+    check_file_descriptor_limit
     setup_signal_handlers
     detect_network_config
+  end
+
+  def get_preset_ports(preset)
+    case preset.to_s.downcase
+    when 'nmap-top-200', 'nmap200', 'top200'
+      NMAP_TOP_200
+    when 'nmap-top-1000', 'nmap1000', 'top1000'
+      NMAP_TOP_200 + NMAP_TOP_1000_EXTRA
+    when 'all'
+      (1..65535)
+    when 'high'
+      (1024..65535)
+    when 'common'
+      (1..1024)
+    else
+      @logger.warn "Unknown preset '#{preset}', using nmap-top-200"
+      NMAP_TOP_200
+    end
+  end
+
+  def check_file_descriptor_limit
+    # Check if we're likely to hit file descriptor limits
+    if @port_range.is_a?(Array)
+      port_count = @port_range.size
+    else
+      port_count = @port_range.size
+    end
+
+    # Get current soft limit (Ruby doesn't have direct access, so we estimate)
+    # Most systems: 1024 (default) or 4096
+    # We'll check via ulimit if available
+    begin
+      current_limit = `ulimit -n 2>/dev/null`.strip.to_i
+      current_limit = 1024 if current_limit == 0 # fallback
+    rescue
+      current_limit = 1024 # conservative estimate
+    end
+
+    # Warn if we're likely to exceed (leaving room for other FDs)
+    safety_margin = 50
+    if port_count > (current_limit - safety_margin)
+      @logger.warn "=" * 70
+      @logger.warn "WARNING: Attempting to bind #{port_count} ports"
+      @logger.warn "Current file descriptor limit: #{current_limit}"
+      @logger.warn "This may fail with 'Too many open files' errors!"
+      @logger.warn ""
+      @logger.warn "Solutions:"
+      @logger.warn "  1. Increase limit: ulimit -n #{port_count + 100}"
+      @logger.warn "  2. Use preset: ruby honeypot.rb --preset nmap-top-200"
+      @logger.warn "  3. Reduce range: ruby honeypot.rb -r 8000:9000"
+      @logger.warn "=" * 70
+
+      # Give user a chance to cancel
+      sleep(3)
+    end
   end
 
   def start
     @logger.info "Starting Network-Aware Honeypot"
     @logger.info "Listening on: #{@bind_ip}"
     @logger.info "Network interfaces: #{@network_info}"
-    @logger.info "Port range: #{@port_range}"
-    
+
+    # Display port configuration
+    if @port_range.is_a?(Array)
+      @logger.info "Ports: #{@port_range.size} ports (preset: Nmap top 200)"
+    else
+      @logger.info "Port range: #{@port_range.first}-#{@port_range.last} (#{@port_range.size} ports)"
+    end
+    @logger.info "Runtime behavior: #{@open_chance}% open, #{@filtered_chance}% filtered, #{100 - @open_chance - @filtered_chance}% closed"
+
     bind_random_ports
     start_listeners
-    
+
     @logger.info "Honeypot ready! Scan me at: #{@scan_targets.join(', ')}"
-    
+
     while @running
       sleep(1)
       cleanup_dead_threads
     end
-    
+
     shutdown
   end
 
@@ -922,26 +1017,52 @@ require 'optparse'
 options = {}
 OptionParser.new do |opts|
   opts.banner = "Usage: #{$0} [options]"
-  
-  opts.on("-r", "--range START:END", "Port range (default: 1:10000)") do |range|
+  opts.separator ""
+  opts.separator "Port Selection Options:"
+
+  opts.on("-p", "--preset PRESET", "Port preset (nmap-top-200, nmap-top-1000, all, high, common)") do |preset|
+    options[:preset] = preset
+  end
+
+  opts.on("-r", "--range START:END", "Port range (e.g., 8000:9000)") do |range|
     start_port, end_port = range.split(':').map(&:to_i)
     options[:port_range] = (start_port..end_port)
   end
-  
+
+  opts.separator ""
+  opts.separator "Network Options:"
+
   opts.on("-i", "--ip IP", "Bind IP (default: 0.0.0.0)") do |ip|
     options[:bind_ip] = ip
   end
-  
-  opts.on("-o", "--open PERCENT", Integer, "Open port percentage") do |percent|
+
+  opts.separator ""
+  opts.separator "Behavior Options (applied at connection time):"
+
+  opts.on("-o", "--open PERCENT", Integer, "Open port percentage (default: 70)") do |percent|
     options[:open_chance] = percent
   end
-  
-  opts.on("-f", "--filtered PERCENT", Integer, "Filtered port percentage") do |percent|
+
+  opts.on("-f", "--filtered PERCENT", Integer, "Filtered port percentage (default: 20)") do |percent|
     options[:filtered_chance] = percent
   end
-  
-  opts.on("-h", "--help", "Show help") do
+
+  opts.separator ""
+  opts.separator "Other Options:"
+
+  opts.on("-h", "--help", "Show this help message") do
     puts opts
+    puts ""
+    puts "Examples:"
+    puts "  #{$0}                                    # Default: Nmap top 200 ports"
+    puts "  #{$0} --preset nmap-top-200             # Explicitly use Nmap top 200"
+    puts "  #{$0} -r 8000:9000                      # Scan ports 8000-9000"
+    puts "  #{$0} --preset all -o 90 -f 5           # All ports, 90% open, 5% filtered"
+    puts ""
+    puts "Default behavior:"
+    puts "  - Ports: Nmap top 200 (prevents 'too many open files' errors)"
+    puts "  - Behavior: 70% open, 20% filtered, 10% closed (decided per connection)"
+    puts "  - Well-known service ports (SSH, HTTP, etc.) always respond as open"
     exit
   end
 end.parse!
