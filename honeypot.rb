@@ -42,11 +42,16 @@ class Honeypot
     @bind_ip = options[:bind_ip] || '0.0.0.0'  # Listen on all interfaces
     @open_chance = options[:open_chance] || 70
     @filtered_chance = options[:filtered_chance] || 20
+    @rotation_interval = options[:rotation_interval] || 10  # Rotate ports every N seconds
 
     @servers = {}
     @threads = []
     @running = true
     @well_known_ports = Set.new  # Track well-known ports for consistent behavior
+    @rotation_mutex = Mutex.new  # Thread-safe port rotation
+    @available_ports = []        # Ports available in range
+    @currently_bound = Set.new   # Currently bound ports
+    @currently_unbound = Set.new # Currently unbound ports
 
     setup_logging
     check_file_descriptor_limit
@@ -120,10 +125,11 @@ class Honeypot
     else
       @logger.info "Port range: #{@port_range.first}-#{@port_range.last} (#{@port_range.size} ports)"
     end
-    @logger.info "Runtime behavior: #{@open_chance}% open, #{@filtered_chance}% filtered, #{100 - @open_chance - @filtered_chance}% closed"
+    @logger.info "Port binding: #{@open_chance}% open (bound), #{100 - @open_chance}% closed (unbound)"
+    @logger.info "Port rotation: Every #{@rotation_interval} seconds"
 
-    bind_random_ports
-    start_listeners
+    bind_initial_ports
+    start_port_rotation_manager
 
     @logger.info "Honeypot ready! Scan me at: #{@scan_targets.join(', ')}"
 
@@ -153,10 +159,8 @@ class Honeypot
     @logger.info "Detected interfaces: #{@network_info}"
   end
 
-  def bind_random_ports
-    available_ports = 0
-
-    # Define well-known service ports that should always respond as open
+  def bind_initial_ports
+    # Define well-known service ports that should always be bound
     well_known_port_list = [
       21,   # FTP
       22,   # SSH
@@ -182,65 +186,159 @@ class Honeypot
       27017 # MongoDB
     ]
 
-    # Store well-known ports in instance variable for runtime checks
+    # Store well-known ports in instance variable
     @well_known_ports = Set.new(well_known_port_list)
 
+    # Build available ports list (excluding privileged if not root)
     @port_range.each do |port|
-      # Skip privileged ports if not root
       next if port < 1024 && Process.uid != 0
+      @available_ports << port
+    end
 
-      # Bind ALL ports in range (state will be determined at connection time)
-      if bind_open_port(port)
-        available_ports += 1
+    # Calculate how many ports to bind initially
+    target_open_count = (@available_ports.size * @open_chance / 100.0).round
+
+    # Separate well-known from others
+    well_known_in_range = @available_ports & @well_known_ports.to_a
+    other_ports = @available_ports - well_known_in_range
+
+    # Always bind well-known ports first
+    ports_to_bind = well_known_in_range.dup
+
+    # Add random selection of other ports to meet target
+    remaining_needed = target_open_count - ports_to_bind.size
+    if remaining_needed > 0
+      ports_to_bind += other_ports.sample(remaining_needed)
+    end
+
+    # Bind selected ports
+    bound_count = 0
+    ports_to_bind.each do |port|
+      if bind_port(port)
+        bound_count += 1
+        @currently_bound.add(port)
         if @well_known_ports.include?(port)
           @logger.info "Bound well-known service port: #{port} (#{service_name(port)})"
         end
       end
     end
 
-    @logger.info "Successfully bound #{available_ports} ports (state determined at runtime)"
+    # Track unbound ports
+    @currently_unbound = Set.new(@available_ports - @currently_bound.to_a)
+
+    @logger.info "Initially bound #{bound_count}/#{@available_ports.size} ports (#{(@open_chance)}% target)"
+    @logger.info "Well-known ports: #{well_known_in_range.size}, Other ports: #{bound_count - well_known_in_range.size}"
   end
 
-  def bind_open_port(port)
-    begin
-      server = TCPServer.new(@bind_ip, port)
-      server.setsockopt(Socket::SOL_SOCKET, Socket::SO_REUSEADDR, 1)
-      @servers[port] = { server: server, type: :open }
-      @logger.debug "Port #{port}: OPEN"
-      true
-    rescue Errno::EADDRINUSE => e
-      @logger.debug "Port #{port}: already in use"
-      false
-    rescue Errno::EACCES => e
-      @logger.debug "Port #{port}: permission denied"
-      false
-    rescue => e
-      @logger.debug "Port #{port}: #{e.message}"
-      false
-    end
-  end
+  def bind_port(port)
+    @rotation_mutex.synchronize do
+      begin
+        server = TCPServer.new(@bind_ip, port)
+        server.setsockopt(Socket::SOL_SOCKET, Socket::SO_REUSEADDR, 1)
 
-  def determine_runtime_behavior(port)
-    # Well-known ports always respond as open for realism
-    return :open if @well_known_ports.include?(port)
+        # Start listener thread for this port
+        thread = Thread.new do
+          handle_port(port, server, :open)
+        end
 
-    # For other ports, randomly choose behavior at connection time
-    roll = rand(100)
-    if roll < @open_chance
-      :open
-    elsif roll < @open_chance + @filtered_chance
-      :filtered
-    else
-      :closed
-    end
-  end
-
-  def start_listeners
-    @servers.each do |port, config|
-      @threads << Thread.new do
-        handle_port(port, config[:server], config[:type])
+        @servers[port] = { server: server, type: :open, thread: thread }
+        @threads << thread
+        @logger.debug "[BIND] Port #{port} bound and listening"
+        true
+      rescue Errno::EADDRINUSE => e
+        @logger.warn "[BIND] Port #{port} already in use"
+        false
+      rescue Errno::EACCES => e
+        @logger.warn "[BIND] Port #{port} permission denied"
+        false
+      rescue => e
+        @logger.error "[BIND] Port #{port} error: #{e.message}"
+        false
       end
     end
+  end
+
+  def unbind_port(port)
+    @rotation_mutex.synchronize do
+      return false unless @servers[port]
+
+      begin
+        config = @servers[port]
+
+        # Close the server socket
+        config[:server].close rescue nil
+
+        # The thread will exit when the server closes
+        # We'll let cleanup_dead_threads handle it
+
+        @servers.delete(port)
+        @logger.info "[UNBIND] Port #{port} closed and unbound"
+        true
+      rescue => e
+        @logger.error "[UNBIND] Port #{port} error: #{e.message}"
+        false
+      end
+    end
+  end
+
+  def start_port_rotation_manager
+    @logger.info "[ROTATION] Starting port rotation manager (interval: #{@rotation_interval}s)"
+
+    @rotation_thread = Thread.new do
+      while @running
+        sleep(@rotation_interval)
+
+        begin
+          rotate_ports
+        rescue => e
+          @logger.error "[ROTATION] Error during rotation: #{e.message}"
+          @logger.debug e.backtrace.join("\n")
+        end
+      end
+    end
+
+    @threads << @rotation_thread
+  end
+
+  def rotate_ports
+    @logger.info "[ROTATION] Starting port rotation cycle"
+
+    # Don't rotate well-known ports (they stay bound)
+    rotatable_bound = @currently_bound.to_a - @well_known_ports.to_a
+    rotatable_unbound = @currently_unbound.to_a - @well_known_ports.to_a
+
+    # Rotate 20-30% of rotatable ports each cycle
+    rotation_percentage = rand(20..30)
+    num_to_rotate = (rotatable_bound.size * rotation_percentage / 100.0).round
+    num_to_rotate = [num_to_rotate, 1].max  # Rotate at least 1 if possible
+
+    return if rotatable_bound.empty? || rotatable_unbound.empty?
+
+    # Select random ports to unbind and bind
+    ports_to_unbind = rotatable_bound.sample([num_to_rotate, rotatable_bound.size].min)
+    ports_to_bind = rotatable_unbound.sample([num_to_rotate, rotatable_unbound.size].min)
+
+    @logger.info "[ROTATION] Rotating #{ports_to_unbind.size} ports (unbind) and #{ports_to_bind.size} ports (bind)"
+
+    # Unbind selected ports
+    ports_to_unbind.each do |port|
+      if unbind_port(port)
+        @currently_bound.delete(port)
+        @currently_unbound.add(port)
+        @logger.debug "[ROTATION] Port #{port}: OPEN -> CLOSED"
+      end
+    end
+
+    # Bind new ports
+    ports_to_bind.each do |port|
+      if bind_port(port)
+        @currently_unbound.delete(port)
+        @currently_bound.add(port)
+        @logger.debug "[ROTATION] Port #{port}: CLOSED -> OPEN"
+      end
+    end
+
+    @logger.info "[ROTATION] Rotation complete. Bound: #{@currently_bound.size}, Unbound: #{@currently_unbound.size}"
   end
 
   def handle_port(port, server, type)
@@ -256,24 +354,27 @@ class Honeypot
 
         @logger.info "[ACCEPT] Connection from #{peer_ip}:#{peer_port} to port #{port}"
 
-        # Determine behavior at runtime (truly ephemeral)
-        behavior = determine_runtime_behavior(port)
-        @logger.info "[STATE] Port #{port} decided: #{behavior.to_s.upcase}"
-
-        case behavior
-        when :open
-          @logger.info "[OPEN] #{peer_ip}:#{peer_port} -> #{port} - Handling as OPEN"
+        # Port is bound, so it's open at the TCP level
+        # Now decide if we respond (open) or hang (filtered)
+        # Well-known ports always respond; others are random
+        if @well_known_ports.include?(port)
+          @logger.info "[OPEN] #{peer_ip}:#{peer_port} -> #{port} - Well-known service"
           handle_open_connection(client, port, peer_ip, peer_port)
-        when :filtered
+        elsif rand(100) < @filtered_chance
+          # Simulate filtered: accept but don't respond
           @logger.info "[FILTERED] #{peer_ip}:#{peer_port} -> #{port} - Simulating filtered port"
           handle_filtered_connection(client, port, peer_ip, peer_port)
-        when :closed
-          @logger.info "[CLOSED] #{peer_ip}:#{peer_port} -> #{port} - Closing immediately"
-          handle_closed_connection(client, port, peer_ip, peer_port)
+        else
+          # Normal open response
+          @logger.info "[OPEN] #{peer_ip}:#{peer_port} -> #{port} - Responding"
+          handle_open_connection(client, port, peer_ip, peer_port)
         end
 
       rescue IO::WaitReadable
         next
+      rescue Errno::EBADF, IOError
+        # Server socket was closed (rotation), exit gracefully
+        break
       rescue => e
         @logger.error "[ERROR] Port #{port} error: #{e.message}"
         @logger.debug e.backtrace.join("\n")
@@ -1037,14 +1138,18 @@ OptionParser.new do |opts|
   end
 
   opts.separator ""
-  opts.separator "Behavior Options (applied at connection time):"
+  opts.separator "Behavior Options:"
 
-  opts.on("-o", "--open PERCENT", Integer, "Open port percentage (default: 70)") do |percent|
+  opts.on("-o", "--open PERCENT", Integer, "Percentage of ports to bind (default: 70)") do |percent|
     options[:open_chance] = percent
   end
 
-  opts.on("-f", "--filtered PERCENT", Integer, "Filtered port percentage (default: 20)") do |percent|
+  opts.on("-f", "--filtered PERCENT", Integer, "Percentage of bound ports that hang (default: 20)") do |percent|
     options[:filtered_chance] = percent
+  end
+
+  opts.on("-t", "--rotation SECONDS", Integer, "Port rotation interval in seconds (default: 10)") do |seconds|
+    options[:rotation_interval] = seconds
   end
 
   opts.separator ""
@@ -1057,12 +1162,21 @@ OptionParser.new do |opts|
     puts "  #{$0}                                    # Default: Nmap top 200 ports"
     puts "  #{$0} --preset nmap-top-200             # Explicitly use Nmap top 200"
     puts "  #{$0} -r 8000:9000                      # Scan ports 8000-9000"
-    puts "  #{$0} --preset all -o 90 -f 5           # All ports, 90% open, 5% filtered"
+    puts "  #{$0} -o 80 -f 10 -t 5                  # 80% bound, 10% filtered, rotate every 5s"
+    puts "  #{$0} --preset all -o 90 -t 30          # All ports, 90% bound, rotate every 30s"
+    puts ""
+    puts "How it works:"
+    puts "  - Port states are TRULY ephemeral via dynamic rotation"
+    puts "  - Bound ports: Respond to Nmap as 'open' or 'filtered'"
+    puts "  - Unbound ports: OS sends RST (Nmap sees as 'closed')"
+    puts "  - Every rotation interval, random ports are bound/unbound"
+    puts "  - Well-known ports (SSH, HTTP, etc.) stay bound and always respond"
     puts ""
     puts "Default behavior:"
     puts "  - Ports: Nmap top 200 (prevents 'too many open files' errors)"
-    puts "  - Behavior: 70% open, 20% filtered, 10% closed (decided per connection)"
-    puts "  - Well-known service ports (SSH, HTTP, etc.) always respond as open"
+    puts "  - Binding: 70% of ports bound (open/filtered), 30% unbound (closed)"
+    puts "  - Filtered: 20% of connections to bound ports hang (no response)"
+    puts "  - Rotation: Ports change state every 10 seconds"
     exit
   end
 end.parse!
