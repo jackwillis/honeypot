@@ -2,6 +2,7 @@
 require 'socket'
 require 'logger'
 require 'time'
+require 'set'
 
 class Honeypot
   def initialize(options = {})
@@ -9,11 +10,12 @@ class Honeypot
     @bind_ip = options[:bind_ip] || '0.0.0.0'  # Listen on all interfaces
     @open_chance = options[:open_chance] || 70
     @filtered_chance = options[:filtered_chance] || 20
-    
+
     @servers = {}
     @threads = []
     @running = true
-    
+    @well_known_ports = Set.new  # Track well-known ports for consistent behavior
+
     setup_logging
     setup_signal_handlers
     detect_network_config
@@ -58,9 +60,9 @@ class Honeypot
 
   def bind_random_ports
     available_ports = 0
-    
-    # Define well-known service ports that should always be open
-    well_known_ports = [
+
+    # Define well-known service ports that should always respond as open
+    well_known_port_list = [
       21,   # FTP
       22,   # SSH
       23,   # Telnet
@@ -84,33 +86,24 @@ class Honeypot
       8443, # HTTPS Alt
       27017 # MongoDB
     ]
-    
+
+    # Store well-known ports in instance variable for runtime checks
+    @well_known_ports = Set.new(well_known_port_list)
+
     @port_range.each do |port|
       # Skip privileged ports if not root
       next if port < 1024 && Process.uid != 0
-      
-      # Always bind well-known service ports
-      if well_known_ports.include?(port)
-        if bind_open_port(port)
-          available_ports += 1
+
+      # Bind ALL ports in range (state will be determined at connection time)
+      if bind_open_port(port)
+        available_ports += 1
+        if @well_known_ports.include?(port)
           @logger.info "Bound well-known service port: #{port} (#{service_name(port)})"
-        end
-      else
-        # For other ports, use the random chance
-        behavior = determine_port_behavior
-        
-        case behavior
-        when :open
-          if bind_open_port(port)
-            available_ports += 1
-          end
-        when :filtered
-          # Filtered ports aren't bound (appear as no response)
         end
       end
     end
-    
-    @logger.info "Successfully bound #{available_ports} ports"
+
+    @logger.info "Successfully bound #{available_ports} ports (state determined at runtime)"
   end
 
   def bind_open_port(port)
@@ -132,14 +125,11 @@ class Honeypot
     end
   end
 
-  def bind_filtered_port(port)
-    # For filtered ports, we don't bind them at all
-    # This makes them appear filtered (no response) to scanners
-    @logger.debug "Port #{port}: FILTERED (not bound)"
-    false
-  end
+  def determine_runtime_behavior(port)
+    # Well-known ports always respond as open for realism
+    return :open if @well_known_ports.include?(port)
 
-  def determine_port_behavior
+    # For other ports, randomly choose behavior at connection time
     roll = rand(100)
     if roll < @open_chance
       :open
@@ -166,11 +156,22 @@ class Honeypot
 
         client = server.accept_nonblock
         peer = client.peeraddr
-        
-        # All bound ports are open ports now
-        @logger.info "#{peer[3]}:#{peer[1]} -> #{port} (OPEN)"
-        handle_open_connection(client, port)
-        
+
+        # Determine behavior at runtime (truly ephemeral)
+        behavior = determine_runtime_behavior(port)
+
+        case behavior
+        when :open
+          @logger.info "#{peer[3]}:#{peer[1]} -> #{port} (OPEN)"
+          handle_open_connection(client, port)
+        when :filtered
+          @logger.info "#{peer[3]}:#{peer[1]} -> #{port} (FILTERED)"
+          handle_filtered_connection(client, port)
+        when :closed
+          @logger.info "#{peer[3]}:#{peer[1]} -> #{port} (CLOSED)"
+          handle_closed_connection(client, port)
+        end
+
       rescue IO::WaitReadable
         next
       rescue => e
@@ -185,7 +186,7 @@ class Honeypot
       begin
         # Set socket options for more realistic behavior
         client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-        
+
         # Send banner immediately for services that do so
         if should_send_banner_immediately?(port)
           banner = generate_banner(port)
@@ -194,14 +195,43 @@ class Honeypot
             client.flush
           end
         end
-        
+
         # Handle interactive protocols
         handle_protocol_interaction(client, port)
-        
+
       rescue Errno::ECONNRESET, Errno::EPIPE => e
         @logger.debug "Connection reset by peer on port #{port}"
       rescue => e
         @logger.debug "Connection error on port #{port}: #{e.message}"
+      ensure
+        client.close rescue nil
+      end
+    end
+  end
+
+  def handle_filtered_connection(client, port)
+    Thread.new do
+      begin
+        # Filtered ports accept the connection but don't respond
+        # This simulates a firewall dropping packets or a timeout
+        # Sleep briefly to simulate network delay/timeout
+        sleep(rand(2..5))
+      rescue => e
+        @logger.debug "Filtered connection error on port #{port}: #{e.message}"
+      ensure
+        client.close rescue nil
+      end
+    end
+  end
+
+  def handle_closed_connection(client, port)
+    Thread.new do
+      begin
+        # Closed ports immediately disconnect
+        # The TCP stack will send RST packet
+        # Just close immediately without any response
+      rescue => e
+        @logger.debug "Closed connection error on port #{port}: #{e.message}"
       ensure
         client.close rescue nil
       end
