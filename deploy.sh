@@ -418,29 +418,11 @@ systemctl restart fail2ban
 log_info "fail2ban is configured and running"
 
 ##############################################################################
-# 8. Configure Firewall (UFW)
+# 8. Firewall Configuration
 ##############################################################################
 
-log_info "Configuring firewall..."
-
-if ! command -v ufw &> /dev/null; then
-    apt-get install -y ufw > /dev/null
-fi
-
-# Configure UFW (idempotent)
-ufw --force enable
-
-# Allow SSH
-ufw allow 22/tcp > /dev/null 2>&1 || true
-
-# Allow HTTP/HTTPS for nginx
-ufw allow 80/tcp > /dev/null 2>&1 || true
-ufw allow 443/tcp > /dev/null 2>&1 || true
-
-# Allow all TCP ports for honeypot
-ufw allow 1:65535/tcp > /dev/null 2>&1 || true
-
-log_info "Firewall configured"
+# Note: No firewall configuration - honeypot needs all ports open
+log_info "Skipping firewall configuration (honeypot requires all ports open)"
 
 ##############################################################################
 # 9. Final Checks

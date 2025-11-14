@@ -371,18 +371,8 @@ namespace :deploy do
     run "systemctl restart fail2ban"
     log_info "fail2ban is configured"
 
-    # Configure firewall
-    log_info "Configuring firewall..."
-    unless system("command -v ufw &> /dev/null")
-      run "apt-get install -y ufw"
-    end
-
-    run_quiet "ufw --force enable"
-    run_quiet "ufw allow 22/tcp"
-    run_quiet "ufw allow 80/tcp"
-    run_quiet "ufw allow 443/tcp"
-    run_quiet "ufw allow 1:65535/tcp"
-    log_info "Firewall configured"
+    # Note: No firewall (ufw/iptables) - honeypot needs all ports open
+    log_info "Skipping firewall configuration (honeypot requires all ports open)"
 
     # Done
     puts "\n" + "=" * 74
