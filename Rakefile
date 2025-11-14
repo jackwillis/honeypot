@@ -108,6 +108,12 @@ namespace :deploy do
       abort
     end
 
+    # Install bundler if not present
+    unless system("command -v bundle >/dev/null 2>&1")
+      log_info "Installing bundler..."
+      run "gem install bundler"
+    end
+
     log_info "All prerequisites found"
 
     # Create honeypot user first (needed for gem installation)
