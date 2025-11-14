@@ -1,1 +1,3 @@
-ruby 3.4.7
+# Development: Use any Ruby 3.2+
+# Production: Uses system Ruby on Debian 13
+ruby 3.4.4

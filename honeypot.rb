@@ -53,7 +53,13 @@ class Honeypot
     @currently_bound = Set.new   # Currently bound ports
     @currently_unbound = Set.new # Currently unbound ports
 
-    setup_logging
+    # Web UI / IPC support
+    @start_time = Time.now
+    @connection_history = []     # Store recent connections for web UI
+    @last_rotation_time = Time.now
+    @rotation_count = 0
+
+    setup_logging(options[:logger])
     check_file_descriptor_limit
     setup_signal_handlers
     detect_network_config
@@ -85,32 +91,58 @@ class Honeypot
       port_count = @port_range.size
     end
 
-    # Get current soft limit (Ruby doesn't have direct access, so we estimate)
-    # Most systems: 1024 (default) or 4096
-    # We'll check via ulimit if available
+    # Get current soft and hard limits
     begin
-      current_limit = `ulimit -n 2>/dev/null`.strip.to_i
-      current_limit = 1024 if current_limit == 0 # fallback
-    rescue
-      current_limit = 1024 # conservative estimate
+      soft_limit, hard_limit = Process.getrlimit(Process::RLIMIT_NOFILE)
+      @logger.debug "File descriptor limits: soft=#{soft_limit}, hard=#{hard_limit}"
+    rescue => e
+      @logger.warn "Could not check file descriptor limit: #{e.message}"
+      return
     end
 
-    # Warn if we're likely to exceed (leaving room for other FDs)
-    safety_margin = 50
-    if port_count > (current_limit - safety_margin)
-      @logger.warn "=" * 70
-      @logger.warn "WARNING: Attempting to bind #{port_count} ports"
-      @logger.warn "Current file descriptor limit: #{current_limit}"
-      @logger.warn "This may fail with 'Too many open files' errors!"
-      @logger.warn ""
-      @logger.warn "Solutions:"
-      @logger.warn "  1. Increase limit: ulimit -n #{port_count + 100}"
-      @logger.warn "  2. Use preset: ruby honeypot.rb --preset nmap-top-200"
-      @logger.warn "  3. Reduce range: ruby honeypot.rb -r 8000:9000"
-      @logger.warn "=" * 70
+    # Calculate required limit (ports + margin for other file descriptors)
+    required_limit = port_count + 100  # 100 FD margin for other operations
 
-      # Give user a chance to cancel
-      sleep(3)
+    # Check if we need to increase the limit
+    if required_limit > soft_limit
+      if required_limit <= hard_limit
+        # We can increase soft limit up to hard limit
+        begin
+          Process.setrlimit(Process::RLIMIT_NOFILE, required_limit, hard_limit)
+          new_soft, _ = Process.getrlimit(Process::RLIMIT_NOFILE)
+          @logger.info "Increased file descriptor limit: #{soft_limit} -> #{new_soft}"
+        rescue Errno::EPERM => e
+          # Permission denied - warn user
+          @logger.warn "=" * 70
+          @logger.warn "WARNING: Cannot increase file descriptor limit (permission denied)"
+          @logger.warn "Attempting to bind #{port_count} ports with limit #{soft_limit}"
+          @logger.warn ""
+          @logger.warn "Solutions:"
+          @logger.warn "  1. Run as root to increase limit automatically"
+          @logger.warn "  2. Manually increase: ulimit -n #{required_limit}"
+          @logger.warn "  3. Use preset: ruby honeypot.rb --preset nmap-top-200"
+          @logger.warn "  4. Reduce range: ruby honeypot.rb -r 8000:9000"
+          @logger.warn "=" * 70
+          sleep(3)
+        rescue => e
+          @logger.error "Failed to set file descriptor limit: #{e.message}"
+        end
+      else
+        # Required limit exceeds hard limit
+        @logger.warn "=" * 70
+        @logger.warn "WARNING: Required limit (#{required_limit}) exceeds hard limit (#{hard_limit})"
+        @logger.warn "Attempting to bind #{port_count} ports with limit #{soft_limit}"
+        @logger.warn ""
+        @logger.warn "Solutions:"
+        @logger.warn "  1. Run as root to modify limits"
+        @logger.warn "  2. Increase hard limit: ulimit -H -n #{required_limit}"
+        @logger.warn "  3. Use preset: ruby honeypot.rb --preset nmap-top-200"
+        @logger.warn "  4. Reduce range: ruby honeypot.rb -r 8000:9000"
+        @logger.warn "=" * 70
+        sleep(3)
+      end
+    else
+      @logger.debug "File descriptor limit sufficient: #{soft_limit} >= #{required_limit}"
     end
   end
 
@@ -130,8 +162,10 @@ class Honeypot
 
     bind_initial_ports
     start_port_rotation_manager
+    start_unix_socket_server
 
     @logger.info "Honeypot ready! Scan me at: #{@scan_targets.join(', ')}"
+    @logger.info "Web UI can connect via Unix socket at /tmp/honeypot.sock"
 
     while @running
       sleep(1)
@@ -353,6 +387,10 @@ class Honeypot
     else
       @logger.info "[ROTATION] Cycled #{unbind_count} closed, #{bind_count} opened. Total: #{@currently_bound.size} bound, #{@currently_unbound.size} unbound"
     end
+
+    # Track rotation for web UI
+    @last_rotation_time = Time.now
+    @rotation_count += 1
   end
 
   def handle_port(port, server, type)
@@ -362,27 +400,43 @@ class Honeypot
         next unless ready
 
         client = server.accept_nonblock
-        peer = client.peeraddr
-        peer_ip = peer[3]
-        peer_port = peer[1]
+
+        # Get peer info - may fail if client disconnected immediately
+        begin
+          peer = client.peeraddr
+          peer_ip = peer[3]
+          peer_port = peer[1]
+        rescue Errno::ENOTCONN
+          # Client disconnected before we could get peer info (fast scanner)
+          @logger.debug "[FAST-CLOSE] Port #{port} - Connection closed before peeraddr"
+          client.close rescue nil
+          next
+        end
 
         @logger.info "[ACCEPT] Connection from #{peer_ip}:#{peer_port} to port #{port}"
 
         # Port is bound, so it's open at the TCP level
         # Now decide if we respond (open) or hang (filtered)
         # Well-known ports always respond; others are random
+        state = nil
         if @well_known_ports.include?(port)
+          state = :open
           @logger.info "[OPEN] #{peer_ip}:#{peer_port} -> #{port} - Well-known service"
           handle_open_connection(client, port, peer_ip, peer_port)
         elsif rand(100) < @filtered_chance
           # Simulate filtered: accept but don't respond
+          state = :filtered
           @logger.info "[FILTERED] #{peer_ip}:#{peer_port} -> #{port} - Simulating filtered port"
           handle_filtered_connection(client, port, peer_ip, peer_port)
         else
           # Normal open response
+          state = :open
           @logger.info "[OPEN] #{peer_ip}:#{peer_port} -> #{port} - Responding"
           handle_open_connection(client, port, peer_ip, peer_port)
         end
+
+        # Log to connection history for web UI
+        log_connection(peer_ip, peer_port, port, state)
 
       rescue IO::WaitReadable
         next
@@ -1071,12 +1125,12 @@ class Honeypot
     end
   end
 
-  def setup_logging
-    @logger = Logger.new($stdout)
-    @logger.level = Logger::INFO
+  def setup_logging(logger = nil)
+    @logger = logger || Logger.new($stdout)
+    @logger.level = Logger::INFO unless logger
     @logger.formatter = proc do |severity, datetime, progname, msg|
       "[#{datetime.strftime('%H:%M:%S')}] #{severity}: #{msg}\n"
-    end
+    end unless logger
   end
 
   def setup_signal_handlers
@@ -1086,6 +1140,133 @@ class Honeypot
 
   def cleanup_dead_threads
     @threads.reject! { |t| !t.alive? }
+  end
+
+  # Log connection to history for web UI
+  def log_connection(source_ip, source_port, dest_port, state)
+    @rotation_mutex.synchronize do
+      @connection_history << {
+        timestamp: Time.now.iso8601,
+        source: "#{source_ip}:#{source_port}",
+        port: dest_port,
+        state: state.to_s
+      }
+      # Keep only last 100 connections
+      @connection_history.shift if @connection_history.size > 100
+    end
+  end
+
+  # Get current status for web UI
+  def get_current_status
+    @rotation_mutex.synchronize do
+      {
+        running: @running,
+        uptime: (Time.now - @start_time).to_i,
+        ports_bound: @currently_bound.size,
+        ports_total: @available_ports.size,
+        last_rotation: (Time.now - @last_rotation_time).to_i,
+        rotation_count: @rotation_count,
+        rotation_interval: @rotation_interval,
+        open_percentage: @open_chance,
+        filtered_percentage: @filtered_chance,
+        connections_today: @connection_history.size
+      }
+    end
+  end
+
+  # Update configuration from web UI
+  def update_runtime_config(config)
+    @rotation_mutex.synchronize do
+      @rotation_interval = config[:rotation_interval].to_i if config[:rotation_interval]
+      @open_chance = config[:open_percentage].to_i if config[:open_percentage]
+      @filtered_chance = config[:filtered_percentage].to_i if config[:filtered_percentage]
+
+      @logger.info "[CONFIG] Updated via web UI: rotation=#{@rotation_interval}s, open=#{@open_chance}%, filtered=#{@filtered_chance}%"
+
+      { success: true, message: "Configuration updated" }
+    end
+  end
+
+  # Get recent connections for web UI
+  def get_recent_connections(limit = 50)
+    @rotation_mutex.synchronize do
+      @connection_history.last(limit)
+    end
+  end
+
+  # Get currently bound ports
+  def get_current_ports
+    @rotation_mutex.synchronize do
+      {
+        bound: @currently_bound.to_a.sort,
+        unbound: @currently_unbound.to_a.sort,
+        well_known: @well_known_ports.to_a.sort
+      }
+    end
+  end
+
+  # Start Unix socket server for web UI communication
+  def start_unix_socket_server(socket_path = '/tmp/honeypot.sock')
+    # Remove old socket if it exists
+    File.delete(socket_path) if File.exist?(socket_path)
+
+    server = UNIXServer.new(socket_path)
+    File.chmod(0666, socket_path)  # Allow non-root web UI to connect
+
+    @logger.info "Unix socket API listening at #{socket_path}"
+
+    Thread.new do
+      while @running
+        begin
+          client = server.accept
+
+          Thread.new(client) do |conn|
+            begin
+              request_data = conn.gets
+              next unless request_data
+
+              request = JSON.parse(request_data)
+              action = request['action']
+              payload = request['payload'] || {}
+
+              response = case action
+              when 'get_status'
+                { data: get_current_status }
+              when 'update_config'
+                { data: update_runtime_config(payload.transform_keys(&:to_sym)) }
+              when 'get_connections'
+                limit = payload['limit'] || 50
+                { data: get_recent_connections(limit) }
+              when 'get_ports'
+                { data: get_current_ports }
+              when 'rotate_now'
+                rotate_ports
+                { data: { success: true, message: "Rotation triggered" } }
+              when 'ping'
+                { data: { pong: true, timestamp: Time.now.to_i } }
+              else
+                { error: "Unknown action: #{action}" }
+              end
+
+              conn.puts(response.to_json)
+            rescue JSON::ParserError => e
+              conn.puts({ error: "Invalid JSON: #{e.message}" }.to_json)
+            rescue => e
+              @logger.error "[IPC] Error handling request: #{e.message}"
+              @logger.debug e.backtrace.join("\n")
+              conn.puts({ error: e.message }.to_json)
+            ensure
+              conn.close rescue nil
+            end
+          end
+        rescue => e
+          @logger.error "[IPC] Error accepting connection: #{e.message}"
+        end
+      end
+    ensure
+      server.close rescue nil
+      File.delete(socket_path) if File.exist?(socket_path)
+    end
   end
 
   def shutdown
@@ -1166,13 +1347,16 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-# Run as non-root if possible (skips ports < 1024)
-if Process.uid == 0
-  puts "Running as root - can bind to all ports"
-else
-  puts "Running as user - will skip privileged ports (< 1024)"
-end
+# Only run if this file is executed directly (not required by tests)
+if __FILE__ == $0
+  # Run as non-root if possible (skips ports < 1024)
+  if Process.uid == 0
+    puts "Running as root - can bind to all ports"
+  else
+    puts "Running as user - will skip privileged ports (< 1024)"
+  end
 
-honeypot = Honeypot.new(options)
-honeypot.start
+  honeypot = Honeypot.new(options)
+  honeypot.start
+end
 

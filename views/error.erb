@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Error - Honeypot</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+
+    .error-container {
+      max-width: 600px;
+      text-align: center;
+    }
+
+    h1 {
+      font-size: 48px;
+      color: #f85149;
+      margin-bottom: 20px;
+    }
+
+    p {
+      font-size: 18px;
+      color: #8b949e;
+      margin-bottom: 30px;
+    }
+
+    .error-details {
+      background: #161b22;
+      padding: 20px;
+      border-radius: 8px;
+      border: 1px solid #da3633;
+      border-left: 4px solid #da3633;
+      margin-bottom: 30px;
+      text-align: left;
+    }
+
+    .error-details code {
+      color: #f85149;
+      font-family: monospace;
+    }
+
+    .button {
+      background: #238636;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 600;
+      display: inline-block;
+      transition: all 0.2s;
+    }
+
+    .button:hover {
+      background: #2ea043;
+      transform: translateY(-1px);
+    }
+  </style>
+</head>
+<body>
+  <div class="error-container">
+    <h1>⚠️ Connection Error</h1>
+    <p>Unable to connect to the honeypot process</p>
+
+    <div class="error-details">
+      <code><%= error_message %></code>
+    </div>
+
+    <p style="font-size: 14px; margin-bottom: 20px;">
+      Make sure the honeypot is running: <code style="color: #58a6ff;">ruby honeypot.rb</code>
+    </p>
+
+    <a href="/dashboard" class="button">🔃 Try Again</a>
+  </div>
+</body>
+</html>

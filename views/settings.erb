@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Honeypot Settings</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 20px;
+      line-height: 1.6;
+    }
+
+    .container { max-width: 900px; margin: 0 auto; }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 2px solid #21262d;
+      padding-bottom: 20px;
+      margin-bottom: 30px;
+    }
+
+    h1 { font-size: 28px; color: #58a6ff; }
+    h2 { font-size: 20px; margin-bottom: 20px; color: #c9d1d9; }
+
+    .nav { display: flex; gap: 15px; }
+    .nav a {
+      color: #8b949e;
+      text-decoration: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    .nav a:hover { background: #21262d; color: #c9d1d9; }
+    .nav a.active { background: #1f6feb; color: white; }
+
+    .section {
+      background: #161b22;
+      padding: 24px;
+      border-radius: 8px;
+      border: 1px solid #21262d;
+      margin-bottom: 24px;
+    }
+
+    .current-config {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+      margin-bottom: 20px;
+      padding: 20px;
+      background: #0d1117;
+      border-radius: 6px;
+    }
+
+    .config-item {
+      text-align: center;
+    }
+
+    .config-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: #8b949e;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+
+    .config-value {
+      font-size: 24px;
+      font-weight: bold;
+      color: #58a6ff;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: #c9d1d9;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .help-text {
+      font-size: 12px;
+      color: #8b949e;
+      margin-top: 4px;
+    }
+
+    input[type="number"] {
+      width: 100%;
+      padding: 10px 12px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #c9d1d9;
+      font-family: inherit;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    input[type="number"]:focus {
+      outline: none;
+      border-color: #58a6ff;
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.1);
+    }
+
+    button, .button {
+      background: #238636;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.2s;
+      text-decoration: none;
+      display: inline-block;
+    }
+
+    button:hover, .button:hover {
+      background: #2ea043;
+      transform: translateY(-1px);
+    }
+
+    .button-secondary {
+      background: #21262d;
+      color: #c9d1d9;
+    }
+
+    .button-secondary:hover {
+      background: #30363d;
+    }
+
+    .scenarios {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 16px;
+    }
+
+    .scenario-card {
+      background: #0d1117;
+      padding: 20px;
+      border-radius: 6px;
+      border: 2px solid #21262d;
+      transition: all 0.2s;
+      cursor: pointer;
+    }
+
+    .scenario-card:hover {
+      border-color: #58a6ff;
+      transform: translateY(-2px);
+    }
+
+    .scenario-card h3 {
+      font-size: 16px;
+      margin-bottom: 8px;
+      color: #58a6ff;
+    }
+
+    .scenario-card p {
+      font-size: 13px;
+      color: #8b949e;
+      margin-bottom: 12px;
+    }
+
+    .scenario-card .params {
+      font-size: 11px;
+      color: #6e7681;
+      font-family: monospace;
+    }
+
+    .scenario-card form {
+      margin: 0;
+    }
+
+    .scenario-card button {
+      width: 100%;
+      margin-top: 12px;
+    }
+
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      border-left: 4px solid;
+    }
+
+    .alert.success {
+      background: #0d4429;
+      border-color: #238636;
+      color: #3fb950;
+    }
+
+    .alert.error {
+      background: #4c1b1b;
+      border-color: #da3633;
+      color: #f85149;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>⚙️ Honeypot Settings</h1>
+      <div class="nav">
+        <a href="/dashboard">Dashboard</a>
+        <a href="/settings" class="active">Settings</a>
+      </div>
+    </div>
+
+    <% if params[:success] %>
+      <div class="alert success">
+        ✓ Settings updated successfully
+        <% if params[:scenario] %>
+          (Applied <%= params[:scenario] %> scenario)
+        <% end %>
+      </div>
+    <% end %>
+
+    <% if params[:error] %>
+      <div class="alert error">
+        ✗ Error: <%= params[:error] %>
+      </div>
+    <% end %>
+
+    <div class="section">
+      <h2>Current Configuration</h2>
+      <div class="current-config">
+        <div class="config-item">
+          <div class="config-label">Rotation Interval</div>
+          <div class="config-value"><%= @status[:rotation_interval] %>s</div>
+        </div>
+        <div class="config-item">
+          <div class="config-label">Open Percentage</div>
+          <div class="config-value"><%= @status[:open_percentage] %>%</div>
+        </div>
+        <div class="config-item">
+          <div class="config-label">Filtered Percentage</div>
+          <div class="config-value"><%= @status[:filtered_percentage] %>%</div>
+        </div>
+        <div class="config-item">
+          <div class="config-label">Total Rotations</div>
+          <div class="config-value"><%= @status[:rotation_count] %></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Quick Scenarios</h2>
+      <p style="margin-bottom: 20px; color: #8b949e;">Apply pre-configured settings for common testing scenarios</p>
+
+      <div class="scenarios">
+        <div class="scenario-card">
+          <h3>☁️ Cloud Native</h3>
+          <p>Simulates AWS/GCP/Azure with fast-changing ephemeral services</p>
+          <div class="params">
+            rotation: 5s | open: 80% | filtered: 15%
+          </div>
+          <form action="/scenarios/cloud" method="post">
+            <button type="submit">Apply Cloud Scenario</button>
+          </form>
+        </div>
+
+        <div class="scenario-card">
+          <h3>🏢 Datacenter</h3>
+          <p>Traditional infrastructure with mostly static ports</p>
+          <div class="params">
+            rotation: 60s | open: 40% | filtered: 30%
+          </div>
+          <form action="/scenarios/datacenter" method="post">
+            <button type="submit">Apply Datacenter Scenario</button>
+          </form>
+        </div>
+
+        <div class="scenario-card">
+          <h3>🔀 Hybrid</h3>
+          <p>Mix of cloud and legacy infrastructure</p>
+          <div class="params">
+            rotation: 15s | open: 60% | filtered: 20%
+          </div>
+          <form action="/scenarios/hybrid" method="post">
+            <button type="submit">Apply Hybrid Scenario</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Custom Configuration</h2>
+      <p style="margin-bottom: 20px; color: #8b949e;">Fine-tune honeypot behavior with custom values</p>
+
+      <form action="/settings" method="post">
+        <div class="form-group">
+          <label for="rotation_interval">
+            Rotation Interval (seconds)
+          </label>
+          <input
+            type="number"
+            id="rotation_interval"
+            name="rotation_interval"
+            value="<%= @status[:rotation_interval] %>"
+            min="1"
+            max="300"
+            required
+          />
+          <div class="help-text">
+            How often ports should rotate between bound and unbound states (1-300 seconds)
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="open_percentage">
+            Open Percentage (%)
+          </label>
+          <input
+            type="number"
+            id="open_percentage"
+            name="open_percentage"
+            value="<%= @status[:open_percentage] %>"
+            min="0"
+            max="100"
+            required
+          />
+          <div class="help-text">
+            Percentage of ports that should be bound (appear as open/filtered to scanners)
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="filtered_percentage">
+            Filtered Percentage (%)
+          </label>
+          <input
+            type="number"
+            id="filtered_percentage"
+            name="filtered_percentage"
+            value="<%= @status[:filtered_percentage] %>"
+            min="0"
+            max="100"
+            required
+          />
+          <div class="help-text">
+            Percentage of bound ports that should hang (simulate filtered behavior)
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 10px;">
+          <button type="submit">💾 Save Configuration</button>
+          <a href="/dashboard" class="button button-secondary">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
