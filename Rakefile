@@ -437,6 +437,7 @@ namespace :deploy do
       # Restart services
       log_info "Restarting services..."
       run "systemctl restart honeypot.service honeypot-web.service"
+      run "systemctl reload nginx"
 
       sleep 1
 
@@ -454,6 +455,12 @@ namespace :deploy do
         log_error "honeypot-web.service failed to start!"
         system "systemctl status honeypot-web.service --no-pager"
         abort
+      end
+
+      if run_quiet("systemctl is-active --quiet nginx")
+        log_info "nginx reloaded successfully"
+      else
+        log_warn "nginx is not running"
       end
     end
 
