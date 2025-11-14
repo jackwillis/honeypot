@@ -26,13 +26,18 @@ ruby web_ui.rb
 ### Quick Start (Production on Debian 13)
 
 ```bash
-# 1. Clone repository to /opt/honeypot
+# 1. Install system dependencies (one-time setup)
+sudo apt-get update
+sudo apt-get install -y ruby ruby-dev build-essential git nginx certbot python3-certbot-nginx fail2ban cron
+sudo gem install sinatra -v '~> 4.0' puma -v '~> 6.0' rackup -v '~> 2.0' json -v '~> 2.7'
+
+# 2. Clone repository to /opt/honeypot
 cd /opt
 git clone <repo-url> honeypot
-
-# 2. Run deployment script
 cd honeypot
-sudo ./deploy.sh
+
+# 3. Run deployment (sets up systemd, nginx, SSL)
+sudo rake deploy
 
 # Access web UI at: https://honeypot.officemsoft.com
 # Services managed by systemd
@@ -373,32 +378,45 @@ test/
 
 For production deployment on a VPS or cloud server:
 
-**Quick deployment:**
+**Prerequisites (install first):**
 ```bash
-# 1. Clone repository
-git clone <repo-url> honeypot
-cd honeypot
+# System packages
+sudo apt-get update
+sudo apt-get install -y ruby ruby-dev build-essential git nginx certbot python3-certbot-nginx fail2ban cron
 
-# 2. Run deployment script
-chmod +x deploy.sh
-./deploy.sh
+# Ruby gems (system-wide)
+sudo gem install sinatra -v '~> 4.0' --conservative
+sudo gem install puma -v '~> 6.0' --conservative
+sudo gem install rackup -v '~> 2.0' --conservative
+sudo gem install json -v '~> 2.7' --conservative
 ```
 
-The `deploy.sh` script handles:
-- Ruby and dependency installation
-- System service setup (systemd)
-- Firewall configuration
-- Log rotation setup
-- File descriptor limit increases
-- Security hardening
+**Deployment with Rake:**
+```bash
+# Clone to /opt/honeypot
+cd /opt
+sudo git clone <repo-url> honeypot
+cd honeypot
 
-**Manual deployment steps:**
-1. Install Ruby 3.2+ and Bundler
-2. Run `bundle install --deployment`
-3. Copy `.env.example` to `.env` and configure credentials
-4. Set up systemd services for both processes
-5. Configure nginx reverse proxy with HTTPS for web UI
-6. Set appropriate file descriptor limits in systemd unit files
+# Full deployment (first time)
+sudo rake deploy
+
+# Quick update (pull code, restart services)
+sudo rake update
+
+# Check status
+sudo rake status
+```
+
+**What `rake deploy` does:**
+- Validates prerequisites are installed
+- Creates honeypot system user
+- Sets up systemd services with CAP_NET_BIND_SERVICE
+- Configures nginx reverse proxy with SSL
+- Obtains Let's Encrypt certificates
+- Sets up automatic SSL renewal
+- Configures fail2ban for web UI protection
+- Creates necessary directories and permissions
 
 **Security recommendations:**
 - Run honeypot as dedicated user with minimal privileges

@@ -91,18 +91,29 @@ namespace :deploy do
 
     log_info "Starting full deployment for #{DOMAIN}..."
 
-    # Install system packages
-    log_info "Installing system dependencies..."
-    run "apt-get update -qq", description: "Updating package lists"
+    # Check prerequisites
+    log_info "Checking prerequisites..."
+    missing = []
 
-    packages = %w[ruby ruby-dev build-essential git nginx certbot python3-certbot-nginx fail2ban cron]
-    packages.each do |pkg|
-      if run_quiet("dpkg -l | grep -q '^ii  #{pkg} '")
-        log_info "#{pkg} already installed"
-      else
-        run "apt-get install -y #{pkg}", description: "Installing #{pkg}"
+    %w[ruby nginx certbot systemctl].each do |cmd|
+      unless system("command -v #{cmd} >/dev/null 2>&1")
+        missing << cmd
       end
     end
+
+    %w[sinatra puma rackup json].each do |gem_name|
+      unless system("gem list -i #{gem_name} >/dev/null 2>&1")
+        missing << "gem:#{gem_name}"
+      end
+    end
+
+    unless missing.empty?
+      log_error "Missing prerequisites: #{missing.join(', ')}"
+      log_error "Please install system dependencies first (see README.md)"
+      abort
+    end
+
+    log_info "All prerequisites found"
 
     # Create honeypot user
     log_info "Creating honeypot system user..."
@@ -112,13 +123,6 @@ namespace :deploy do
       run "useradd --system --home-dir #{APP_DIR} --shell /usr/sbin/nologin --comment 'Honeypot Service User' #{HONEYPOT_USER}"
       log_info "Created user #{HONEYPOT_USER}"
     end
-
-    # Install Ruby gems
-    log_info "Installing Ruby gems system-wide..."
-    %w[sinatra~>4.0 puma~>6.0 rackup~>2.0 json~>2.7].each do |gem|
-      run_quiet "gem install #{gem.gsub('~>', ' -v ')} --conservative 2>&1"
-    end
-    log_info "Ruby gems installed"
 
     # Set ownership
     if Dir.exist?(APP_DIR)
@@ -422,13 +426,6 @@ namespace :deploy do
         abort
       end
 
-      # Update gems
-      log_info "Updating Ruby gems..."
-      %w[sinatra~>4.0 puma~>6.0 rackup~>2.0 json~>2.7].each do |gem|
-        run_quiet "gem install #{gem.gsub('~>', ' -v ')} --conservative 2>&1"
-      end
-      log_info "Ruby gems updated"
-
       # Fix ownership
       run "chown -R #{HONEYPOT_USER}:#{HONEYPOT_USER} #{APP_DIR}"
 
@@ -495,9 +492,12 @@ namespace :deploy do
   end
 end
 
-# Shortcuts for common tasks
-desc "Deploy honeypot to production (alias for deploy:full)"
+# Shortcuts for common tasks (no namespace required)
+desc "Deploy honeypot to production"
 task :deploy => 'deploy:full'
 
-desc "Update honeypot deployment (alias for deploy:update)"
+desc "Update honeypot deployment"
 task :update => 'deploy:update'
+
+desc "Show deployment status"
+task :status => 'deploy:status'

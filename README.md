@@ -307,10 +307,97 @@ test/
 - API endpoints
 - Error handling
 
+## Production Deployment (Debian 13)
+
+### Prerequisites
+
+Before deploying with Rake, install system dependencies:
+
+```bash
+# Update package lists
+sudo apt-get update
+
+# Install required packages
+sudo apt-get install -y \
+  ruby \
+  ruby-dev \
+  build-essential \
+  git \
+  nginx \
+  certbot \
+  python3-certbot-nginx \
+  fail2ban \
+  cron
+
+# Install Ruby gems system-wide
+sudo gem install sinatra -v '~> 4.0' --conservative
+sudo gem install puma -v '~> 6.0' --conservative
+sudo gem install rackup -v '~> 2.0' --conservative
+sudo gem install json -v '~> 2.7' --conservative
+```
+
+### Deployment Steps
+
+```bash
+# 1. Clone repository to /opt/honeypot
+sudo mkdir -p /opt
+cd /opt
+sudo git clone <repo-url> honeypot
+cd honeypot
+
+# 2. Run full deployment (sets up systemd, nginx, SSL, etc.)
+sudo rake deploy
+
+# 3. Configure credentials
+sudo nano /opt/honeypot/.env
+# Set WEB_USERNAME and WEB_PASSWORD
+
+# 4. Restart web service
+sudo systemctl restart honeypot-web.service
+```
+
+### Deployment Tasks
+
+```bash
+# Full deployment (first time)
+sudo rake deploy
+
+# Quick update (pull code, restart services)
+sudo rake update
+
+# Check deployment status
+sudo rake status
+```
+
+### What `rake deploy` Does
+
+- Creates `honeypot` system user
+- Sets up systemd services with CAP_NET_BIND_SERVICE
+- Configures nginx reverse proxy with SSL
+- Obtains Let's Encrypt certificates
+- Sets up automatic SSL renewal
+- Configures fail2ban for web UI protection
+- Creates necessary directories and permissions
+
+### Managing Services
+
+```bash
+# Check status
+sudo systemctl status honeypot.service
+sudo systemctl status honeypot-web.service
+
+# View logs
+sudo journalctl -u honeypot.service -f
+sudo journalctl -u honeypot-web.service -f
+
+# Restart services
+sudo systemctl restart honeypot.service
+sudo systemctl restart honeypot-web.service
+```
+
 ## Requirements
 
-- Ruby 3.4.x
-- Bundler
+- Ruby 3.2+ (3.3+ recommended for production)
 - Unix-like OS (Linux, macOS, BSD)
 
 ## License
