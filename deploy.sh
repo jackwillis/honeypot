@@ -125,14 +125,45 @@ fi
 
 cd "$APP_DIR"
 
-# Set ownership
-chown -R "$HONEYPOT_USER:$HONEYPOT_USER" "$APP_DIR"
+# Add safe directory exception for git (in case we need to pull later)
+if [ -d .git ]; then
+    git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+fi
 
 # Install Ruby dependencies
 log_info "Installing Ruby gems..."
-sudo -u "$HONEYPOT_USER" bundle config set --local deployment 'true'
-sudo -u "$HONEYPOT_USER" bundle config set --local without 'development test'
-sudo -u "$HONEYPOT_USER" bundle install --quiet
+
+# Find bundle path (try multiple locations)
+BUNDLE_PATH=$(which bundle 2>/dev/null)
+if [ -z "$BUNDLE_PATH" ]; then
+    # Try common gem bin paths
+    for path in /usr/local/bin/bundle /var/lib/gems/*/bin/bundle /usr/lib/ruby/gems/*/bin/bundle; do
+        if [ -x "$path" ]; then
+            BUNDLE_PATH=$path
+            break
+        fi
+    done
+fi
+
+if [ -z "$BUNDLE_PATH" ]; then
+    log_warn "bundler not found in PATH, reinstalling..."
+    gem install bundler
+    BUNDLE_PATH=$(which bundle 2>/dev/null)
+    if [ -z "$BUNDLE_PATH" ]; then
+        log_error "Failed to install bundler"
+        exit 1
+    fi
+fi
+
+log_info "Using bundler at: $BUNDLE_PATH"
+
+# Run bundle as root, then fix ownership
+$BUNDLE_PATH config set --local deployment 'true'
+$BUNDLE_PATH config set --local without 'development test'
+$BUNDLE_PATH install --quiet
+
+# Set ownership after bundle install
+chown -R "$HONEYPOT_USER:$HONEYPOT_USER" "$APP_DIR"
 
 # Create .env file if it doesn't exist
 if [ ! -f "$APP_DIR/.env" ]; then

@@ -49,6 +49,9 @@ log_info "Updating honeypot application..."
 log_info "Pulling latest code from git..."
 
 if [ -d .git ]; then
+    # Add safe directory exception for git
+    git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+
     # Stash any local changes (like .env)
     git stash push -m "Auto-stash before update" -- ':!.env' > /dev/null 2>&1 || true
 
@@ -68,11 +71,27 @@ fi
 
 log_info "Updating Ruby gems..."
 
+# Find bundle path (try multiple locations)
+BUNDLE_PATH=$(which bundle 2>/dev/null)
+if [ -z "$BUNDLE_PATH" ]; then
+    # Try common gem bin paths
+    for path in /usr/local/bin/bundle /var/lib/gems/*/bin/bundle /usr/lib/ruby/gems/*/bin/bundle; do
+        if [ -x "$path" ]; then
+            BUNDLE_PATH=$path
+            break
+        fi
+    done
+fi
+
+if [ -z "$BUNDLE_PATH" ]; then
+    log_error "bundler not found - please run deploy.sh first"
+    exit 1
+fi
+
+$BUNDLE_PATH install --quiet
+
 # Fix ownership in case git pull was run as different user
 chown -R "$HONEYPOT_USER:$HONEYPOT_USER" "$APP_DIR"
-
-# Update gems
-sudo -u "$HONEYPOT_USER" bundle install --quiet
 
 ##############################################################################
 # 3. Restart Services
