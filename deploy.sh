@@ -251,6 +251,10 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
+        # Pass through Authorization header for Basic Auth
+        proxy_set_header Authorization $http_authorization;
+        proxy_pass_header Authorization;
+
         # WebSocket support (if needed in future)
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
