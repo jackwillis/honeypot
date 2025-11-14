@@ -102,19 +102,28 @@ namespace :deploy do
       end
     end
 
-    %w[sinatra puma rackup json activerecord sqlite3].each do |gem_name|
-      unless system("gem list -i #{gem_name} >/dev/null 2>&1")
-        missing << "gem:#{gem_name}"
-      end
-    end
-
     unless missing.empty?
       log_error "Missing prerequisites: #{missing.join(', ')}"
-      log_error "Please install system dependencies first (see README.md)"
+      log_error "Please install system dependencies: sudo apt-get install #{missing.join(' ')}"
       abort
     end
 
     log_info "All prerequisites found"
+
+    # Install gems via bundler (vendor/bundle)
+    log_info "Installing gems via bundler..."
+    if Dir.exist?(APP_DIR)
+      Dir.chdir(APP_DIR) do
+        # Configure bundler for deployment (vendor/bundle, no system gems)
+        run "bundle config set --local deployment true", description: "Configure bundler deployment mode"
+        run "bundle config set --local path vendor/bundle", description: "Set bundle path to vendor/bundle"
+        run "bundle config set --local without development:test", description: "Skip dev/test gems"
+
+        # Install as honeypot user to avoid root ownership issues
+        run "sudo -u #{HONEYPOT_USER} bundle install", description: "Install gems to vendor/bundle"
+      end
+      log_info "Gems installed to #{APP_DIR}/vendor/bundle"
+    end
 
     # Create honeypot user
     log_info "Creating honeypot system user..."
@@ -325,8 +334,8 @@ namespace :deploy do
       # Resource limits
       LimitNOFILE=66000
 
-      # Start
-      ExecStart=/usr/bin/ruby #{APP_DIR}/honeypot.rb -o 9 -t 30
+      # Start (using bundler to load vendored gems)
+      ExecStart=/usr/local/bin/bundle exec ruby #{APP_DIR}/honeypot.rb -o 9 -t 30
       Restart=always
       RestartSec=10
       StandardOutput=journal
@@ -363,8 +372,8 @@ namespace :deploy do
       ProtectHome=true
       ReadWritePaths=/var/lib/honeypot /var/log/honeypot /run/honeypot
 
-      # Start
-      ExecStart=/usr/bin/ruby #{APP_DIR}/web_ui.rb
+      # Start (using bundler to load vendored gems)
+      ExecStart=/usr/local/bin/bundle exec ruby #{APP_DIR}/web_ui.rb
       Restart=always
       RestartSec=10
       StandardOutput=journal

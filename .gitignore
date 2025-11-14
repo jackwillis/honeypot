@@ -18,6 +18,9 @@ tmp
 .tool-versions
 Gemfile.lock
 
+# Bundler vendored gems
+vendor/bundle/
+
 # Logs
 *.log
 
