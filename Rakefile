@@ -110,22 +110,7 @@ namespace :deploy do
 
     log_info "All prerequisites found"
 
-    # Install gems via bundler (vendor/bundle)
-    log_info "Installing gems via bundler..."
-    if Dir.exist?(APP_DIR)
-      Dir.chdir(APP_DIR) do
-        # Configure bundler for deployment (vendor/bundle, no system gems)
-        run "bundle config set --local deployment true", description: "Configure bundler deployment mode"
-        run "bundle config set --local path vendor/bundle", description: "Set bundle path to vendor/bundle"
-        run "bundle config set --local without development:test", description: "Skip dev/test gems"
-
-        # Install as honeypot user to avoid root ownership issues
-        run "sudo -u #{HONEYPOT_USER} bundle install", description: "Install gems to vendor/bundle"
-      end
-      log_info "Gems installed to #{APP_DIR}/vendor/bundle"
-    end
-
-    # Create honeypot user
+    # Create honeypot user first (needed for gem installation)
     log_info "Creating honeypot system user..."
     if run_quiet("id #{HONEYPOT_USER}")
       log_info "User #{HONEYPOT_USER} already exists"
@@ -142,6 +127,18 @@ namespace :deploy do
       if Dir.exist?("#{APP_DIR}/.git")
         run_quiet "git config --global --add safe.directory #{APP_DIR}"
       end
+
+      # Install gems via bundler (as honeypot user)
+      log_info "Installing gems via bundler..."
+      Dir.chdir(APP_DIR) do
+        # Configure bundler (as honeypot user)
+        run "sudo -u #{HONEYPOT_USER} bundle config set --local path vendor/bundle"
+        run "sudo -u #{HONEYPOT_USER} bundle config set --local without development:test"
+
+        # Install gems
+        run "sudo -u #{HONEYPOT_USER} bundle install"
+      end
+      log_info "Gems installed to #{APP_DIR}/vendor/bundle"
     else
       log_error "#{APP_DIR} does not exist. Please clone the repository there first."
       abort
@@ -449,8 +446,11 @@ namespace :deploy do
     puts "\nManagement:"
     puts "  rake update     # Pull code and restart services"
     puts "  rake status     # Show service status"
-    puts "  rake report     # Generate connection report (requires ActiveRecord setup)"
-    puts "  rake cleanup    # Clean up old connections from database"
+    puts "  rake report     # Connection statistics (database)"
+    puts "  rake cleanup    # Clean old connections (90 days)"
+    puts "\nGems:"
+    puts "  Location:  #{APP_DIR}/vendor/bundle"
+    puts "  Update:    sudo -u #{HONEYPOT_USER} bundle update"
     puts ""
   end
 

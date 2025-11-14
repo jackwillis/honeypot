@@ -311,7 +311,7 @@ test/
 
 ### Prerequisites
 
-Before deploying with Rake, install system dependencies:
+Install system dependencies (Ruby, build tools, nginx, SSL):
 
 ```bash
 # Update package lists
@@ -327,14 +327,14 @@ sudo apt-get install -y \
   certbot \
   python3-certbot-nginx \
   fail2ban \
-  cron
+  cron \
+  sqlite3
 
-# Install Ruby gems system-wide
-sudo gem install sinatra -v '~> 4.0' --conservative
-sudo gem install puma -v '~> 6.0' --conservative
-sudo gem install rackup -v '~> 2.0' --conservative
-sudo gem install json -v '~> 2.7' --conservative
+# Install bundler (only system gem needed)
+sudo gem install bundler
 ```
+
+**Note:** We use bundler to install gems to `vendor/bundle` instead of system-wide installation. This keeps gems isolated to the project.
 
 ### Deployment Steps
 
@@ -345,16 +345,21 @@ cd /opt
 sudo git clone <repo-url> honeypot
 cd honeypot
 
-# 2. Run full deployment (sets up systemd, nginx, SSL, etc.)
+# 2. Run full deployment (installs gems, sets up systemd, nginx, SSL, etc.)
 sudo rake deploy
 
-# 3. Configure credentials
-sudo nano /opt/honeypot/.env
-# Set WEB_USERNAME and WEB_PASSWORD
-
-# 4. Restart web service
-sudo systemctl restart honeypot-web.service
+# The deploy task will:
+# - Install gems via bundler to vendor/bundle
+# - Create honeypot system user
+# - Set up systemd services
+# - Configure nginx with SSL
+# - Create credentials at /etc/honeypot/credentials
 ```
+
+**Accessing the Web UI:**
+- URL: `https://honeypot.officemsoft.com`
+- View credentials: `sudo cat /etc/honeypot/credentials`
+- Change password: Edit `/etc/honeypot/credentials` and restart services
 
 ### Deployment Tasks
 
@@ -371,13 +376,15 @@ sudo rake status
 
 ### What `rake deploy` Does
 
+- Installs gems via bundler to `vendor/bundle` (as honeypot user)
+- Creates FHS-compliant directories (`/etc/honeypot`, `/var/lib/honeypot`, `/var/log/honeypot`)
 - Creates `honeypot` system user
-- Sets up systemd services with CAP_NET_BIND_SERVICE
+- Sets up systemd services with CAP_NET_BIND_SERVICE and RuntimeDirectory
 - Configures nginx reverse proxy with SSL
 - Obtains Let's Encrypt certificates
-- Sets up automatic SSL renewal
+- Sets up automatic SSL renewal (cron)
 - Configures fail2ban for web UI protection
-- Creates necessary directories and permissions
+- Generates secure credentials at `/etc/honeypot/credentials`
 
 ### Managing Services
 
