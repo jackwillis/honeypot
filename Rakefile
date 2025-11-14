@@ -1,4 +1,5 @@
 require 'rake/testtask'
+require 'securerandom'
 
 # Default task
 task default: :test
