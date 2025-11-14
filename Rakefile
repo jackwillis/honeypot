@@ -240,7 +240,6 @@ namespace :deploy do
               proxy_set_header X-Forwarded-Proto $scheme;
 
               # Pass through Authorization header for Basic Auth
-              proxy_set_header Authorization $http_authorization;
               proxy_pass_header Authorization;
 
               # WebSocket support
@@ -373,9 +372,9 @@ namespace :deploy do
       port = 443
       filter = honeypot-web
       logpath = /var/log/nginx/honeypot_access.log
-      maxretry = 5
+      maxretry = 10
       findtime = 600
-      bantime = 3600
+      bantime = 1800
       action = iptables-multiport[name=honeypot-web, port="80,443", protocol=tcp]
     JAIL
 
