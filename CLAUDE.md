@@ -4,37 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-### Quick Start
+### Quick Start (Development)
 
 ```bash
-# 1. Install dependencies
-bundle install
-
-# 2. Set up web UI credentials
+# 1. Set up web UI credentials
 cp .env.example .env
 # Edit .env and set WEB_USERNAME and WEB_PASSWORD
 
-# 3. Run everything with Foreman
-foreman start
+# 2. Run in separate terminals:
+
+# Terminal 1: Honeypot
+sudo ruby honeypot.rb
+
+# Terminal 2: Web UI
+ruby web_ui.rb
 
 # Access web UI at: http://localhost:4167
 # Honeypot ports: 1-10000 (Nmap top 200 by default)
 ```
 
-### Running the Honeypot
+### Quick Start (Production on Debian 13)
 
-**With Foreman (recommended):**
 ```bash
-foreman start                    # Runs both honeypot and web UI
-```
+# 1. Clone repository to /opt/honeypot
+cd /opt
+git clone <repo-url> honeypot
 
-**Manually (separate terminals):**
-```bash
-# Terminal 1: Honeypot (needs root for ports < 1024)
-sudo ruby honeypot.rb
+# 2. Run deployment script
+cd honeypot
+sudo ./deploy.sh
 
-# Terminal 2: Web UI (runs as regular user)
-ruby web_ui.rb
+# Access web UI at: https://honeypot.officemsoft.com
+# Services managed by systemd
 ```
 
 **Command-line options (honeypot.rb):**
@@ -68,9 +69,37 @@ ruby honeypot.rb --preset nmap-top-200 -o 80 -f 10 -t 15
 ruby honeypot.rb -h
 ```
 
-### Running as Root vs Non-Root
-- As root: Can bind to all ports including privileged ports (< 1024)
-- As non-root: Will skip privileged ports and only bind to ports >= 1024
+### Running in Development
+
+In development, run both processes manually in separate terminals:
+
+```bash
+# Terminal 1: Honeypot (needs root/sudo for ports < 1024)
+sudo ruby honeypot.rb
+
+# Terminal 2: Web UI (runs as regular user)
+ruby web_ui.rb
+```
+
+### Running in Production
+
+In production (Debian 13), use systemd services:
+
+```bash
+# Check status
+sudo systemctl status honeypot.service
+sudo systemctl status honeypot-web.service
+
+# View logs
+sudo journalctl -u honeypot.service -f
+sudo journalctl -u honeypot-web.service -f
+
+# Restart services
+sudo systemctl restart honeypot.service
+sudo systemctl restart honeypot-web.service
+```
+
+The honeypot service runs as the `honeypot` user with `CAP_NET_BIND_SERVICE` capability, allowing it to bind privileged ports without running as root.
 
 ### Web UI
 
@@ -100,18 +129,21 @@ This is a network honeypot application designed to simulate **truly ephemeral po
 **Two-Process Architecture:**
 ```
 ┌─────────────────────────────────────┐
-│  Process 1: Honeypot (root)         │
+│  Process 1: Honeypot                │
 │  - honeypot.rb                      │
+│  - Runs as 'honeypot' user          │
+│  - CAP_NET_BIND_SERVICE capability  │
 │  - Binds to ports 1-65535           │
-│  - Unix socket API server           │
-│  - /tmp/honeypot.sock               │
+│  - Unix socket API: /tmp/honeypot.sock │
 └──────────────┬──────────────────────┘
                │ Unix Socket IPC
 ┌──────────────┴──────────────────────┐
-│  Process 2: Web UI (non-root)       │
+│  Process 2: Web UI                  │
 │  - web_ui.rb (Sinatra + Puma)       │
+│  - Runs as 'honeypot' user          │
 │  - HTTP server on port 4167         │
 │  - Basic authentication             │
+│  - nginx reverse proxy (production) │
 └─────────────────────────────────────┘
 ```
 
@@ -270,16 +302,20 @@ Example:
 
 ```
 honeypot/
-├── honeypot.rb          # Main honeypot process (root)
-├── web_ui.rb            # Web UI process (non-root)
+├── honeypot.rb          # Main honeypot process
+├── web_ui.rb            # Web UI process
 ├── lib/
 │   └── honeypot_client.rb  # Unix socket client library
 ├── views/
 │   ├── dashboard.erb    # Dashboard page template
 │   ├── settings.erb     # Settings page template
 │   └── error.erb        # Error page template
+├── test/                # Test suite
+│   ├── unit/
+│   └── integration/
+├── deploy.sh            # Production deployment script
+├── update.sh            # Quick update script
 ├── Gemfile              # Ruby dependencies
-├── Procfile             # Foreman process definitions
 ├── .env.example         # Environment variables template
 ├── .env                 # Your credentials (not in git)
 └── CLAUDE.md           # This file
@@ -460,5 +496,12 @@ See existing handlers in honeypot.rb (lines 523-1048) as examples. Each handler:
 3. Update web UI to use new endpoint (web_ui.rb)
 4. Add integration test for new API call
 
-### Ruby Version
-Uses Ruby 3.4.4 in development (3.2+ required). Production uses system Ruby on Debian 13.
+### Ruby Version & Dependencies
+
+- **Development**: Ruby 3.2+ (any version)
+- **Production**: System Ruby on Debian 13 (Ruby 3.3+)
+- **Dependencies**: Installed system-wide via `gem install`, no bundler required in production
+  - sinatra ~> 4.0
+  - puma ~> 6.0
+  - rackup ~> 2.0
+  - json ~> 2.7

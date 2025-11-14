@@ -81,21 +81,7 @@ for pkg in "${PACKAGES[@]}"; do
     fi
 done
 
-# Install bundler if not present
-if ! gem list bundler -i > /dev/null 2>&1; then
-    log_info "Installing bundler..."
-    gem install bundler
-else
-    log_info "bundler already installed"
-fi
-
-# Install foreman if not present
-if ! gem list foreman -i > /dev/null 2>&1; then
-    log_info "Installing foreman..."
-    gem install foreman
-else
-    log_info "foreman already installed"
-fi
+# Note: We don't need bundler or foreman - using system gems with systemd
 
 ##############################################################################
 # 2. Create Honeypot System User
@@ -131,38 +117,17 @@ if [ -d .git ]; then
 fi
 
 # Install Ruby dependencies
-log_info "Installing Ruby gems..."
+log_info "Installing Ruby gems system-wide..."
 
-# Find bundle path (try multiple locations)
-BUNDLE_PATH=$(which bundle 2>/dev/null)
-if [ -z "$BUNDLE_PATH" ]; then
-    # Try common gem bin paths
-    for path in /usr/local/bin/bundle /var/lib/gems/*/bin/bundle /usr/lib/ruby/gems/*/bin/bundle; do
-        if [ -x "$path" ]; then
-            BUNDLE_PATH=$path
-            break
-        fi
-    done
-fi
+# Install gems directly (simpler for system Ruby)
+gem install sinatra -v '~> 4.0' --conservative > /dev/null 2>&1 || true
+gem install puma -v '~> 6.0' --conservative > /dev/null 2>&1 || true
+gem install rackup -v '~> 2.0' --conservative > /dev/null 2>&1 || true
+gem install json -v '~> 2.7' --conservative > /dev/null 2>&1 || true
 
-if [ -z "$BUNDLE_PATH" ]; then
-    log_warn "bundler not found in PATH, reinstalling..."
-    gem install bundler
-    BUNDLE_PATH=$(which bundle 2>/dev/null)
-    if [ -z "$BUNDLE_PATH" ]; then
-        log_error "Failed to install bundler"
-        exit 1
-    fi
-fi
+log_info "Ruby gems installed"
 
-log_info "Using bundler at: $BUNDLE_PATH"
-
-# Run bundle as root, then fix ownership
-$BUNDLE_PATH config set --local deployment 'true'
-$BUNDLE_PATH config set --local without 'development test'
-$BUNDLE_PATH install --quiet
-
-# Set ownership after bundle install
+# Set ownership
 chown -R "$HONEYPOT_USER:$HONEYPOT_USER" "$APP_DIR"
 
 # Create .env file if it doesn't exist

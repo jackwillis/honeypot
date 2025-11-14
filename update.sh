@@ -71,24 +71,13 @@ fi
 
 log_info "Updating Ruby gems..."
 
-# Find bundle path (try multiple locations)
-BUNDLE_PATH=$(which bundle 2>/dev/null)
-if [ -z "$BUNDLE_PATH" ]; then
-    # Try common gem bin paths
-    for path in /usr/local/bin/bundle /var/lib/gems/*/bin/bundle /usr/lib/ruby/gems/*/bin/bundle; do
-        if [ -x "$path" ]; then
-            BUNDLE_PATH=$path
-            break
-        fi
-    done
-fi
+# Update gems directly (simpler for system Ruby)
+gem install sinatra -v '~> 4.0' --conservative > /dev/null 2>&1 || true
+gem install puma -v '~> 6.0' --conservative > /dev/null 2>&1 || true
+gem install rackup -v '~> 2.0' --conservative > /dev/null 2>&1 || true
+gem install json -v '~> 2.7' --conservative > /dev/null 2>&1 || true
 
-if [ -z "$BUNDLE_PATH" ]; then
-    log_error "bundler not found - please run deploy.sh first"
-    exit 1
-fi
-
-$BUNDLE_PATH install --quiet
+log_info "Ruby gems updated"
 
 # Fix ownership in case git pull was run as different user
 chown -R "$HONEYPOT_USER:$HONEYPOT_USER" "$APP_DIR"

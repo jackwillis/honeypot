@@ -5,7 +5,6 @@ ruby '~> 3.2'
 gem 'sinatra', '~> 4.0'
 gem 'puma', '~> 6.0'
 gem 'rackup', '~> 2.0'
-gem 'foreman', '~> 0.88'
 gem 'json', '~> 2.7'
 
 group :test do
