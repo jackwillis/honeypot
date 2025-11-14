@@ -318,6 +318,7 @@ namespace :deploy do
       Type=simple
       User=#{HONEYPOT_USER}
       WorkingDirectory=#{APP_DIR}
+      EnvironmentFile=#{APP_DIR}/.env
       Environment="RACK_ENV=production"
       ExecStart=/usr/bin/ruby #{APP_DIR}/web_ui.rb
       Restart=always
