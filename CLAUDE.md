@@ -304,5 +304,161 @@ status = client.status
 # => { ports_bound: 140, uptime: 3600, last_rotation: 12, ... }
 ```
 
+### Testing
+
+The project includes a comprehensive test suite using Minitest:
+
+**Run all tests:**
+```bash
+bundle exec rake test
+```
+
+**Test structure:**
+```
+test/
+├── test_helper.rb          # Shared test setup and utilities
+├── unit/
+│   ├── test_honeypot.rb         # Honeypot class unit tests
+│   └── test_honeypot_client.rb  # IPC client unit tests
+└── integration/
+    ├── test_ipc_communication.rb # Socket communication tests
+    └── test_web_ui.rb            # Web UI integration tests
+```
+
+**Key test coverage:**
+- Port rotation logic and state management
+- IPC protocol and Unix socket communication
+- File descriptor limit validation
+- Configuration parsing and validation
+- Web UI authentication and endpoints
+- Connection logging and history tracking
+
+### Deployment
+
+For production deployment on a VPS or cloud server:
+
+**Quick deployment:**
+```bash
+# 1. Clone repository
+git clone <repo-url> honeypot
+cd honeypot
+
+# 2. Run deployment script
+chmod +x deploy.sh
+./deploy.sh
+```
+
+The `deploy.sh` script handles:
+- Ruby and dependency installation
+- System service setup (systemd)
+- Firewall configuration
+- Log rotation setup
+- File descriptor limit increases
+- Security hardening
+
+**Manual deployment steps:**
+1. Install Ruby 3.2+ and Bundler
+2. Run `bundle install --deployment`
+3. Copy `.env.example` to `.env` and configure credentials
+4. Set up systemd services for both processes
+5. Configure nginx reverse proxy with HTTPS for web UI
+6. Set appropriate file descriptor limits in systemd unit files
+
+**Security recommendations:**
+- Run honeypot as dedicated user with minimal privileges
+- Use strong passwords in `.env`
+- Configure nginx with HTTPS (Let's Encrypt)
+- Restrict web UI access by IP (firewall or nginx allow lists)
+- Enable log rotation to prevent disk filling
+- Monitor system resources (CPU, memory, file descriptors)
+- Regular security updates for Ruby and dependencies
+
+### Troubleshooting
+
+**"Too many open files" error:**
+```bash
+# Check current limit
+ulimit -n
+
+# Increase limit temporarily
+ulimit -n 66000
+
+# For systemd service, add to unit file:
+[Service]
+LimitNOFILE=66000
+
+# Or use preset with fewer ports:
+ruby honeypot.rb --preset nmap-top-200
+```
+
+**Honeypot won't bind to privileged ports (<1024):**
+```bash
+# Run as root
+sudo ruby honeypot.rb
+
+# Or use only high ports
+ruby honeypot.rb --preset high
+```
+
+**Web UI can't connect to honeypot:**
+```bash
+# Check if honeypot is running
+ps aux | grep honeypot.rb
+
+# Check if Unix socket exists
+ls -la /tmp/honeypot.sock
+
+# Check socket permissions (should be 0666)
+# If wrong, honeypot will recreate on restart
+```
+
+**Rotation not happening:**
+- Check logs for rotation interval setting
+- Verify rotation thread is running (logs show [ROTATION] messages)
+- Ensure enough rotatable ports (well-known ports never rotate)
+- Check if file descriptor limit prevented binding new ports
+
+**Web UI shows authentication error:**
+- Verify `.env` file exists and has correct credentials
+- Check `WEB_USERNAME` and `WEB_PASSWORD` are set
+- Try default credentials: admin / change_me
+- Restart web UI process after changing `.env`
+
+**High CPU usage:**
+- Normal during active scans (many connection threads)
+- Reduce rotation frequency: `-t 30` (30 second intervals)
+- Use fewer ports: `--preset nmap-top-200`
+- Check for connection floods (review logs for source IPs)
+
+### Development
+
+**Project structure:**
+- `honeypot.rb` - Main application (1300+ lines)
+- `web_ui.rb` - Sinatra web interface
+- `lib/` - Shared libraries and client code
+- `views/` - ERB templates for web UI
+- `test/` - Test suite
+- `CLAUDE.md` - AI assistant documentation (this file)
+
+**Making changes:**
+1. Run tests before changes: `bundle exec rake test`
+2. Make your modifications
+3. Run tests after changes
+4. Test manually with both processes running
+5. Check logs for any errors or warnings
+
+**Adding new protocol handlers:**
+See existing handlers in honeypot.rb (lines 523-1048) as examples. Each handler:
+- Receives client socket, port, and peer info
+- Sends appropriate banner/response
+- Optionally handles multi-line protocols
+- Logs interactions for monitoring
+
+**Modifying IPC API:**
+1. Add new action handler in `start_unix_socket_server` (honeypot.rb:1142-1269)
+2. Add corresponding method in `HoneypotClient` (lib/honeypot_client.rb)
+3. Update web UI to use new endpoint (web_ui.rb)
+4. Add integration test for new API call
+
 ### Ruby Version
-Uses Ruby 3.4.7 as specified in `.tool-versions`
+Uses Ruby 3.4.4 in development (3.2+ required). Production uses system Ruby on Debian 13.

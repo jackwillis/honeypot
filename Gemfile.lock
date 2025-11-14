@@ -4,6 +4,7 @@ GEM
     base64 (0.3.0)
     foreman (0.90.0)
       thor (~> 1.4)
+    json (2.16.0)
     logger (1.7.0)
     minitest (5.26.1)
     mocha (2.8.0)
@@ -43,6 +44,7 @@ PLATFORMS
 
 DEPENDENCIES
   foreman (~> 0.88)
+  json (~> 2.7)
   minitest (~> 5.20)
   mocha (~> 2.1)
   puma (~> 6.0)
@@ -50,6 +52,9 @@ DEPENDENCIES
   rackup (~> 2.0)
   rake (~> 13.0)
   sinatra (~> 4.0)
+
+RUBY VERSION
+   ruby 3.4.4p34
 
 BUNDLED WITH
    2.7.1

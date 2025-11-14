@@ -3,6 +3,7 @@ require 'socket'
 require 'logger'
 require 'time'
 require 'set'
+require 'json'
 
 class Honeypot
   # Nmap's most commonly scanned ports (top 200)
