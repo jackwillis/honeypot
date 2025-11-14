@@ -151,7 +151,39 @@ mkdir -p "$APP_DIR/logs"
 chown -R "$HONEYPOT_USER:$HONEYPOT_USER" "$APP_DIR/logs"
 
 ##############################################################################
-# 4. Configure nginx
+# 4. Obtain Let's Encrypt SSL Certificate First
+##############################################################################
+
+log_info "Setting up Let's Encrypt SSL..."
+
+if [ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+    log_info "Obtaining SSL certificate for $DOMAIN..."
+
+    # Stop nginx if running
+    systemctl stop nginx 2>/dev/null || true
+
+    # Obtain certificate using standalone mode
+    certbot certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
+
+    if [ $? -eq 0 ]; then
+        log_info "SSL certificate obtained successfully"
+    else
+        log_error "Failed to obtain SSL certificate"
+        log_error "Make sure $DOMAIN points to this server and ports 80/443 are open"
+        exit 1
+    fi
+else
+    log_info "SSL certificate already exists for $DOMAIN"
+fi
+
+# Set up automatic renewal
+if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
+    log_info "Setting up automatic SSL renewal..."
+    (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'") | crontab -
+fi
+
+##############################################################################
+# 5. Configure nginx (Now that SSL certs exist)
 ##############################################################################
 
 log_info "Configuring nginx..."
@@ -178,8 +210,9 @@ server {
 
 # HTTPS server
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
     server_name honeypot.officemsoft.com;
 
     # SSL certificates (managed by certbot)
@@ -243,38 +276,6 @@ else
     log_error "nginx configuration is invalid!"
     nginx -t
     exit 1
-fi
-
-##############################################################################
-# 5. Set Up Let's Encrypt SSL
-##############################################################################
-
-log_info "Setting up Let's Encrypt SSL..."
-
-if [ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
-    log_info "Obtaining SSL certificate for $DOMAIN..."
-
-    # Stop nginx temporarily
-    systemctl stop nginx
-
-    # Obtain certificate
-    certbot certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
-
-    if [ $? -eq 0 ]; then
-        log_info "SSL certificate obtained successfully"
-    else
-        log_error "Failed to obtain SSL certificate"
-        log_error "Make sure $DOMAIN points to this server and ports 80/443 are open"
-        exit 1
-    fi
-else
-    log_info "SSL certificate already exists for $DOMAIN"
-fi
-
-# Set up automatic renewal
-if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-    log_info "Setting up automatic SSL renewal..."
-    (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'") | crontab -
 fi
 
 # Start nginx
