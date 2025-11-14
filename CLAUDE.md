@@ -7,21 +7,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Quick Start (Development)
 
 ```bash
-# 1. Set up web UI credentials
-cp .env.example .env
-# Edit .env and set WEB_USERNAME and WEB_PASSWORD
+# 1. Set up web UI credentials (export environment variables)
+export WEB_USERNAME=admin
+export WEB_PASSWORD=your_password_here
+export WEB_PORT=4167
+export WEB_BIND=127.0.0.1
 
 # 2. Run in separate terminals:
 
 # Terminal 1: Honeypot
 sudo ruby honeypot.rb
 
-# Terminal 2: Web UI
+# Terminal 2: Web UI (uses environment variables above)
 ruby web_ui.rb
 
 # Access web UI at: http://localhost:4167
 # Honeypot ports: 1-10000 (Nmap top 200 by default)
 ```
+
+**Note:** For development, you can also create a `.env` file locally (not committed to git) and load it with `export $(cat .env | xargs)` before running `web_ui.rb`. However, production uses systemd environment management.
 
 ### Quick Start (Production on Debian 13)
 
@@ -118,14 +122,18 @@ The honeypot includes a web-based control panel for easy configuration and monit
 - Basic authentication for security
 
 **Access:**
-- URL: `http://localhost:4167` (or your server IP)
-- Default credentials: admin / change_me (set in `.env`)
+- Development: `http://localhost:4167` (credentials via environment variables)
+- Production: `https://honeypot.officemsoft.com` (credentials in `/etc/honeypot/env`)
+
+**Configuration:**
+- Development: Set `WEB_USERNAME`, `WEB_PASSWORD`, `WEB_PORT`, `WEB_BIND` environment variables
+- Production: Managed by systemd via `/etc/honeypot/env` (EnvironmentFile)
 
 **Security:**
 - Basic HTTP authentication
 - Runs as non-root user (separate from honeypot process)
 - Communicates with honeypot via Unix socket
-- For public deployment: Use nginx with HTTPS + IP whitelist
+- Production: nginx with HTTPS + IP whitelist + fail2ban
 
 ## Architecture Overview
 

@@ -5,6 +5,13 @@ require 'time'
 require 'set'
 require 'json'
 
+# Database setup (ActiveRecord + SQLite)
+require_relative 'db/setup'
+require_relative 'lib/models/connection'
+
+# Initialize database
+HoneypotDB.setup!
+
 class Honeypot
   # Nmap's most commonly scanned ports (top 200)
   NMAP_TOP_200 = [
@@ -56,7 +63,6 @@ class Honeypot
 
     # Web UI / IPC support
     @start_time = Time.now
-    @connection_history = []     # Store recent connections for web UI
     @last_rotation_time = Time.now
     @rotation_count = 0
 
@@ -166,7 +172,8 @@ class Honeypot
     start_unix_socket_server
 
     @logger.info "Honeypot ready! Scan me at: #{@scan_targets.join(', ')}"
-    @logger.info "Web UI can connect via Unix socket at /tmp/honeypot.sock"
+    socket_path = ENV['RACK_ENV'] == 'production' ? '/run/honeypot/honeypot.sock' : '/tmp/honeypot.sock'
+    @logger.info "Web UI can connect via Unix socket at #{socket_path}"
 
     while @running
       sleep(1)
@@ -1143,17 +1150,23 @@ class Honeypot
     @threads.reject! { |t| !t.alive? }
   end
 
-  # Log connection to history for web UI
-  def log_connection(source_ip, source_port, dest_port, state)
-    @rotation_mutex.synchronize do
-      @connection_history << {
-        timestamp: Time.now.iso8601,
-        source: "#{source_ip}:#{source_port}",
-        port: dest_port,
-        state: state.to_s
-      }
-      # Keep only last 100 connections
-      @connection_history.shift if @connection_history.size > 100
+  # Log connection to database (ActiveRecord)
+  def log_connection(source_ip, source_port, dest_port, state, duration: nil, banner: nil, service: nil)
+    # Log to database asynchronously to avoid blocking
+    Thread.new do
+      begin
+        Connection.log_connection!(
+          source_ip: source_ip,
+          source_port: source_port,
+          dest_port: dest_port,
+          state: state,
+          duration: duration,
+          banner: banner,
+          service: service
+        )
+      rescue => e
+        @logger.error "Failed to log connection to database: #{e.message}"
+      end
     end
   end
 
@@ -1170,7 +1183,22 @@ class Honeypot
         rotation_interval: @rotation_interval,
         open_percentage: @open_chance,
         filtered_percentage: @filtered_chance,
-        connections_today: @connection_history.size
+        connections_today: Connection.today.count
+      }
+    rescue => e
+      @logger.error "Failed to get status: #{e.message}"
+      # Return basic status without database stats
+      {
+        running: @running,
+        uptime: (Time.now - @start_time).to_i,
+        ports_bound: @currently_bound.size,
+        ports_unbound: @currently_unbound.size,
+        last_rotation: (Time.now - @last_rotation_time).to_i,
+        rotation_count: @rotation_count,
+        rotation_interval: @rotation_interval,
+        open_percentage: @open_chance,
+        filtered_percentage: @filtered_chance,
+        connections_today: 0
       }
     end
   end
@@ -1188,11 +1216,12 @@ class Honeypot
     end
   end
 
-  # Get recent connections for web UI
+  # Get recent connections from database
   def get_recent_connections(limit = 50)
-    @rotation_mutex.synchronize do
-      @connection_history.last(limit)
-    end
+    Connection.recent(limit).map(&:to_hash)
+  rescue => e
+    @logger.error "Failed to fetch connections from database: #{e.message}"
+    []
   end
 
   # Get currently bound ports
@@ -1207,7 +1236,18 @@ class Honeypot
   end
 
   # Start Unix socket server for web UI communication
-  def start_unix_socket_server(socket_path = '/tmp/honeypot.sock')
+  def start_unix_socket_server(socket_path = nil)
+    # Use production path (/run/honeypot) or development path (/tmp)
+    socket_path ||= if ENV['RACK_ENV'] == 'production'
+      '/run/honeypot/honeypot.sock'
+    else
+      '/tmp/honeypot.sock'
+    end
+
+    # Ensure parent directory exists (systemd creates /run/honeypot via RuntimeDirectory)
+    socket_dir = File.dirname(socket_path)
+    Dir.mkdir(socket_dir, 0755) unless Dir.exist?(socket_dir)
+
     # Remove old socket if it exists
     File.delete(socket_path) if File.exist?(socket_path)
 

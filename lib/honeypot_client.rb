@@ -2,14 +2,21 @@ require 'socket'
 require 'json'
 
 class HoneypotClient
-  SOCKET_PATH = '/tmp/honeypot.sock'
+  # Production uses /run/honeypot (systemd RuntimeDirectory)
+  # Development uses /tmp for convenience
+  DEFAULT_SOCKET_PATH = if ENV['RACK_ENV'] == 'production'
+    '/run/honeypot/honeypot.sock'
+  else
+    '/tmp/honeypot.sock'
+  end
+
   TIMEOUT = 5 # seconds
 
   class ConnectionError < StandardError; end
   class TimeoutError < StandardError; end
 
-  def initialize(socket_path: SOCKET_PATH)
-    @socket_path = socket_path
+  def initialize(socket_path: nil)
+    @socket_path = socket_path || ENV['HONEYPOT_SOCKET'] || DEFAULT_SOCKET_PATH
   end
 
   # Get current honeypot status

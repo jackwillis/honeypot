@@ -101,7 +101,7 @@ namespace :deploy do
       end
     end
 
-    %w[sinatra puma rackup json].each do |gem_name|
+    %w[sinatra puma rackup json activerecord sqlite3].each do |gem_name|
       unless system("gem list -i #{gem_name} >/dev/null 2>&1")
         missing << "gem:#{gem_name}"
       end
@@ -132,29 +132,40 @@ namespace :deploy do
       if Dir.exist?("#{APP_DIR}/.git")
         run_quiet "git config --global --add safe.directory #{APP_DIR}"
       end
-
-      # Create .env if needed
-      env_file = "#{APP_DIR}/.env"
-      unless File.exist?(env_file)
-        log_info "Creating .env file..."
-        if File.exist?("#{APP_DIR}/.env.example")
-          run "cp #{APP_DIR}/.env.example #{env_file}"
-        else
-          File.write(env_file, <<~ENV)
-            WEB_USERNAME=admin
-            WEB_PASSWORD=change_me_#{SecureRandom.hex(8)}
-          ENV
-        end
-        run "chown #{HONEYPOT_USER}:#{HONEYPOT_USER} #{env_file}"
-        log_warn "Please edit #{env_file} and set WEB_USERNAME and WEB_PASSWORD"
-      end
-
-      # Create logs directory
-      run "mkdir -p #{APP_DIR}/logs"
-      run "chown -R #{HONEYPOT_USER}:#{HONEYPOT_USER} #{APP_DIR}/logs"
     else
       log_error "#{APP_DIR} does not exist. Please clone the repository there first."
       abort
+    end
+
+    # Create FHS-compliant directory structure
+    log_info "Creating FHS directories..."
+
+    # /etc/honeypot - Configuration
+    run "mkdir -p /etc/honeypot"
+
+    # /var/lib/honeypot - Database & persistent state
+    run "mkdir -p /var/lib/honeypot"
+    run "chown #{HONEYPOT_USER}:#{HONEYPOT_USER} /var/lib/honeypot"
+
+    # /var/log/honeypot - Logs
+    run "mkdir -p /var/log/honeypot"
+    run "chown #{HONEYPOT_USER}:#{HONEYPOT_USER} /var/log/honeypot"
+
+    # Create systemd credentials file (instead of .env)
+    creds_file = "/etc/honeypot/credentials"
+    unless File.exist?(creds_file)
+      log_info "Creating systemd credentials file..."
+      random_password = "honeypot_#{SecureRandom.hex(16)}"
+      File.write(creds_file, <<~CREDS)
+        # Honeypot Web UI Credentials
+        # Managed by systemd (loaded via EnvironmentFile)
+        WEB_USERNAME=admin
+        WEB_PASSWORD=#{random_password}
+      CREDS
+      run "chmod 600 #{creds_file}"
+      run "chown root:root #{creds_file}"
+      log_warn "Generated credentials in #{creds_file}"
+      log_warn "Default password: #{random_password}"
     end
 
     # SSL certificate
@@ -283,17 +294,22 @@ namespace :deploy do
     File.write("/etc/systemd/system/honeypot.service", <<~SERVICE)
       [Unit]
       Description=Network Honeypot with Dynamic Port Rotation
-      After=network.target
+      Documentation=https://github.com/...
+      After=network-online.target
+      Wants=network-online.target
 
       [Service]
       Type=simple
       User=#{HONEYPOT_USER}
+      Group=#{HONEYPOT_USER}
       WorkingDirectory=#{APP_DIR}
-      ExecStart=/usr/bin/ruby #{APP_DIR}/honeypot.rb --preset nmap-top-200
-      Restart=always
-      RestartSec=10
-      StandardOutput=journal
-      StandardError=journal
+
+      # Environment
+      Environment="RACK_ENV=production"
+
+      # Runtime directory (creates /run/honeypot)
+      RuntimeDirectory=honeypot
+      RuntimeDirectoryMode=0755
 
       # Allow binding to privileged ports without root
       AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -303,7 +319,17 @@ namespace :deploy do
       PrivateTmp=true
       ProtectSystem=strict
       ProtectHome=true
-      ReadWritePaths=#{APP_DIR}/logs /tmp
+      ReadWritePaths=/var/lib/honeypot /var/log/honeypot
+
+      # Resource limits
+      LimitNOFILE=66000
+
+      # Start
+      ExecStart=/usr/bin/ruby #{APP_DIR}/honeypot.rb
+      Restart=always
+      RestartSec=10
+      StandardOutput=journal
+      StandardError=journal
 
       [Install]
       WantedBy=multi-user.target
@@ -312,25 +338,36 @@ namespace :deploy do
     File.write("/etc/systemd/system/honeypot-web.service", <<~SERVICE)
       [Unit]
       Description=Honeypot Web UI
+      Documentation=https://github.com/...
       After=network.target honeypot.service
+      Requires=honeypot.service
 
       [Service]
       Type=simple
       User=#{HONEYPOT_USER}
+      Group=#{HONEYPOT_USER}
       WorkingDirectory=#{APP_DIR}
-      EnvironmentFile=#{APP_DIR}/.env
+
+      # Environment
       Environment="RACK_ENV=production"
-      ExecStart=/usr/bin/ruby #{APP_DIR}/web_ui.rb
-      Restart=always
-      RestartSec=10
-      StandardOutput=journal
-      StandardError=journal
+      Environment="WEB_PORT=#{WEB_PORT}"
+      Environment="WEB_BIND=127.0.0.1"
+
+      # Load credentials from systemd-managed file
+      EnvironmentFile=/etc/honeypot/credentials
 
       # Security hardening
       PrivateTmp=true
       ProtectSystem=strict
       ProtectHome=true
-      ReadWritePaths=#{APP_DIR}/logs /tmp
+      ReadWritePaths=/var/lib/honeypot /var/log/honeypot /run/honeypot
+
+      # Start
+      ExecStart=/usr/bin/ruby #{APP_DIR}/web_ui.rb
+      Restart=always
+      RestartSec=10
+      StandardOutput=journal
+      StandardError=journal
 
       [Install]
       WantedBy=multi-user.target
@@ -387,18 +424,23 @@ namespace :deploy do
     log_info "Skipping firewall configuration (honeypot requires all ports open)"
 
     # Done
-    puts "\n" + "=" * 74
+    puts "\n" + "=" * 80
     log_info "Deployment complete!"
-    puts "=" * 74
+    puts "=" * 80
     puts "\nServices:"
     puts "  honeypot:  systemctl status honeypot.service"
     puts "  web UI:    systemctl status honeypot-web.service"
     puts "\nAccess:"
     puts "  Web UI:    https://#{DOMAIN}"
-    puts "  Config:    #{APP_DIR}/.env"
+    puts "  Creds:     sudo cat /etc/honeypot/credentials"
     puts "\nLogs:"
     puts "  journalctl -u honeypot.service -f"
     puts "  journalctl -u honeypot-web.service -f"
+    puts "\nManagement:"
+    puts "  rake update     # Pull code and restart services"
+    puts "  rake status     # Show service status"
+    puts "  rake report     # Generate connection report (requires ActiveRecord setup)"
+    puts "  rake cleanup    # Clean up old connections from database"
     puts ""
   end
 
@@ -490,6 +532,66 @@ namespace :deploy do
     puts "  https://#{DOMAIN}"
     puts ""
   end
+
+  desc "Generate connection report from database"
+  task :report do
+    require_relative 'db/setup'
+    require_relative 'lib/models/connection'
+
+    HoneypotDB.connect!
+
+    puts "\n" + "=" * 80
+    puts "Honeypot Connection Report"
+    puts "=" * 80
+    puts ""
+
+    stats = HoneypotDB.stats
+    puts "Database Statistics:"
+    puts "  Total connections: #{stats[:total_connections]}"
+    puts "  Unique IPs: #{stats[:unique_ips]}"
+    puts "  Database size: #{(stats[:database_size] / 1024.0 / 1024.0).round(2)} MB"
+    puts "  Oldest record: #{stats[:oldest_record]}"
+    puts "  Newest record: #{stats[:newest_record]}"
+    puts ""
+
+    puts "Top 10 Ports:"
+    Connection.top_ports(limit: 10).each do |p|
+      puts "  Port #{p[:port]}: #{p[:count]} connections"
+    end
+    puts ""
+
+    puts "Top 10 Source IPs:"
+    Connection.top_ips(limit: 10).each do |ip|
+      puts "  #{ip[:ip]}: #{ip[:count]} connections"
+    end
+    puts ""
+
+    puts "State Distribution:"
+    Connection.state_distribution.each do |state, count|
+      puts "  #{state}: #{count}"
+    end
+    puts "=" * 80
+    puts ""
+  rescue => e
+    log_error "Failed to generate report: #{e.message}"
+    log_error "Make sure database is initialized"
+  end
+
+  desc "Cleanup old connections from database"
+  task :cleanup, [:days] do |t, args|
+    days = (args[:days] || 90).to_i
+
+    require_relative 'db/setup'
+    require_relative 'lib/models/connection'
+
+    HoneypotDB.connect!
+
+    log_info "Cleaning up connections older than #{days} days..."
+    deleted = HoneypotDB.cleanup_old_connections!(days: days)
+    log_info "Deleted #{deleted} connections"
+  rescue => e
+    log_error "Failed to cleanup: #{e.message}"
+  end
 end
 
 # Shortcuts for common tasks (no namespace required)
@@ -501,3 +603,9 @@ task :update => 'deploy:update'
 
 desc "Show deployment status"
 task :status => 'deploy:status'
+
+desc "Generate connection report"
+task :report => 'deploy:report'
+
+desc "Cleanup old connections"
+task :cleanup, [:days] => 'deploy:cleanup'
