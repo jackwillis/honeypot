@@ -326,7 +326,7 @@ namespace :deploy do
       LimitNOFILE=66000
 
       # Start
-      ExecStart=/usr/bin/ruby #{APP_DIR}/honeypot.rb
+      ExecStart=/usr/bin/ruby #{APP_DIR}/honeypot.rb -o 9 -t 30
       Restart=always
       RestartSec=10
       StandardOutput=journal
