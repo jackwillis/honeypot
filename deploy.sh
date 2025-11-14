@@ -70,6 +70,7 @@ PACKAGES=(
     "certbot"
     "python3-certbot-nginx"
     "fail2ban"
+    "cron"
 )
 
 for pkg in "${PACKAGES[@]}"; do
@@ -177,9 +178,15 @@ else
 fi
 
 # Set up automatic renewal
-if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-    log_info "Setting up automatic SSL renewal..."
-    (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'") | crontab -
+if command -v crontab &> /dev/null; then
+    if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
+        log_info "Setting up automatic SSL renewal..."
+        (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'") | crontab -
+    else
+        log_info "SSL auto-renewal already configured"
+    fi
+else
+    log_warn "cron not available, SSL auto-renewal not configured (certbot will use systemd timer)"
 fi
 
 ##############################################################################
