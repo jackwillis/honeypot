@@ -466,6 +466,11 @@ class Honeypot
         # Set socket options for more realistic behavior
         client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
 
+        # Set read/write timeouts to prevent hanging connections (5 seconds)
+        timeout = 5
+        client.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVTIMEO, [timeout, 0].pack('l_2'))
+        client.setsockopt(Socket::SOL_SOCKET, Socket::SO_SNDTIMEO, [timeout, 0].pack('l_2'))
+
         # Send banner immediately for services that do so
         if should_send_banner_immediately?(port)
           banner = generate_banner(port)
@@ -487,7 +492,11 @@ class Honeypot
       ensure
         duration = Time.now - start_time
         @logger.info "[CLOSE] #{peer_ip}:#{peer_port} -> #{port} (#{duration.round(2)}s)"
-        client.close rescue nil
+        begin
+          client.close unless client.closed?
+        rescue => e
+          @logger.debug "[CLOSE-ERROR] #{peer_ip}:#{peer_port} -> #{port} - #{e.message}"
+        end
       end
     end
   end
@@ -496,19 +505,28 @@ class Honeypot
     Thread.new do
       start_time = Time.now
       begin
+        # Set socket timeouts to prevent hanging
+        timeout = 5
+        client.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVTIMEO, [timeout, 0].pack('l_2'))
+        client.setsockopt(Socket::SOL_SOCKET, Socket::SO_SNDTIMEO, [timeout, 0].pack('l_2'))
+
         # Filtered ports accept the connection but don't respond
         # This simulates a firewall dropping packets or a timeout
         # Sleep briefly to simulate network delay/timeout
-        timeout = rand(2..5)
-        @logger.debug "[FILTERED] #{peer_ip}:#{peer_port} -> #{port} - Holding for #{timeout}s"
-        sleep(timeout)
+        sleep_time = rand(2..5)
+        @logger.debug "[FILTERED] #{peer_ip}:#{peer_port} -> #{port} - Holding for #{sleep_time}s"
+        sleep(sleep_time)
       rescue => e
         @logger.error "[ERROR] #{peer_ip}:#{peer_port} -> #{port} - #{e.message}"
         @logger.debug e.backtrace.join("\n")
       ensure
         duration = Time.now - start_time
         @logger.info "[CLOSE] #{peer_ip}:#{peer_port} -> #{port} (#{duration.round(2)}s) [filtered]"
-        client.close rescue nil
+        begin
+          client.close unless client.closed?
+        rescue => e
+          @logger.debug "[CLOSE-ERROR] #{peer_ip}:#{peer_port} -> #{port} - #{e.message}"
+        end
       end
     end
   end
@@ -523,7 +541,11 @@ class Honeypot
         @logger.debug e.backtrace.join("\n")
       ensure
         @logger.debug "[CLOSE] #{peer_ip}:#{peer_port} -> #{port} [immediate RST]"
-        client.close rescue nil
+        begin
+          client.close unless client.closed?
+        rescue => e
+          @logger.debug "[CLOSE-ERROR] #{peer_ip}:#{peer_port} -> #{port} - #{e.message}"
+        end
       end
     end
   end
